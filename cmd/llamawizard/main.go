@@ -122,7 +122,9 @@ func checkForUpdates() {
 		os.Exit(0)
 	}
 	fmt.Printf("Updated to %s. Restarting...\n", release.TagName)
-	syscall.Exec(execPath, os.Args, os.Environ())
+	if err := syscall.Exec(execPath, os.Args, os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to restart: %v\nPlease restart manually.\n", err)
+	}
 }
 
 func printHelp() {
