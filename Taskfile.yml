@@ -1,0 +1,92 @@
+version: "3"
+
+env:
+  PKG: ./cmd/llamawizard
+  OUTPUT: llamawizard
+
+tasks:
+  build:
+    desc: Build binary with version info injected via ldflags
+    cmds:
+      - go build -ldflags="-X main.version={{.VERSION}}" -o {{.OUTPUT}} {{.PKG}}
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+
+  test:
+    desc: Run all tests with race detector and coverage
+    cmds:
+      - go test ./... -race -cover
+
+  lint:
+    desc: Run go vet and golangci-lint
+    cmds:
+      - go vet ./...
+      - golangci-lint run
+
+  install:
+    desc: Install locally with version info
+    cmds:
+      - go install -ldflags="-X main.version={{.VERSION}}" {{.PKG}}
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+
+  clean:
+    desc: Remove built binary
+    cmds:
+      - rm -f {{.OUTPUT}}
+      - go clean
+
+  release:patch:
+    desc: Bump patch version, create annotated tag, and push
+    cmds:
+      - task: _bump
+        vars: { PART: patch }
+
+  release:minor:
+    desc: Bump minor version, create annotated tag, and push
+    cmds:
+      - task: _bump
+        vars: { PART: minor }
+
+  release:major:
+    desc: Bump major version, create annotated tag, and push
+    cmds:
+      - task: _bump
+        vars: { PART: major }
+
+  changelog:
+    desc: Generate CHANGELOG.md from conventional commits
+    cmds:
+      - which git-cliff || brew install git-cliff
+      - git cliff --output CHANGELOG.md --tag-pattern "^v[0-9].*"
+
+  _bump:
+    internal: true
+    vars:
+      PART: '{{.PART | default "patch"}}'
+    cmds:
+      - |
+        latest=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        latest=${latest#v}
+        IFS='.' read -r major minor patch <<< "$latest"
+        case "{{.PART}}" in
+          major)
+            major=$((major + 1))
+            minor=0
+            patch=0
+            ;;
+          minor)
+            minor=$((minor + 1))
+            patch=0
+            ;;
+          patch)
+            patch=$((patch + 1))
+            ;;
+        esac
+        next="v${major}.${minor}.${patch}"
+        echo "Bumping $latest -> $next"
+        git tag -a "$next" -m "$next"
+        git push origin "$next"
+        echo "Tag $next pushed — GoReleaser will now publish the release."

@@ -1,0 +1,23 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Go build output
+llamawizard
+*.exe
+*.test
+*.out
+
+# But track the cmd directory source files
+!cmd/llamawizard/
+
+# Vendor (if ever vendored)
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+

@@ -1,0 +1,128 @@
+
+{
+  "hardware": {
+    "gpus": [
+      {
+        "name": "Apple M5 Pro",
+        "vendor": "apple",
+        "vram_bytes": 51539607552,
+        "usable_vram_bytes": 49392123904,
+        "memory_bandwidth_gbps": 307.0,
+        "shared_memory": true
+      }
+    ],
+    "cpu": "Apple M5 Pro",
+    "cpu_cores": 18,
+    "ram_bytes": 51539607552,
+    "ram_budget_bytes": null,
+    "budget_notes": [
+      "VRAM headroom: 2.0 GB reserved per GPU"
+    ],
+    "os": "darwin"
+  },
+  "models": [
+    {
+      "rank": 1,
+      "model_id": "Qwen/Qwen3.6-27B",
+      "artifact_repo_id": "batiai/Qwen3.6-27B-GGUF",
+      "artifact_filename": "Qwen-Qwen3.6-27B-Q4_K_M.gguf",
+      "parameter_count": 27781427952,
+      "published_at": "2026-04-21T07:50:43.000Z",
+      "downloads": 6639278,
+      "quant_type": "Q4_K_M",
+      "file_size_bytes": 15627053223,
+      "vram_required_bytes": 19307400599,
+      "vram_available_bytes": 49392123904,
+      "uses_multi_gpu": false,
+      "multi_gpu_effective_vram_bytes": null,
+      "estimated_tok_per_sec": 8.860083729427508,
+      "speed_confidence": "medium",
+      "speed_range_tok_per_sec": [
+        5.3,
+        14.2
+      ],
+      "speed_notes": [
+        "Speed is estimated from memory bandwidth, quantization, backend, and fit type.",
+        "This is a synthetic GGUF estimate for an official repo, not a measured GGUF file."
+      ],
+      "quality_score": 87.31,
+      "benchmark_status": "direct",
+      "benchmark_source": "direct",
+      "benchmark_confidence": 1.0,
+      "fit_type": "full_gpu",
+      "can_run": true,
+      "warnings": [],
+      "license": "apache-2.0"
+    },
+    {
+      "rank": 2,
+      "model_id": "google/gemma-4-26B-A4B-it",
+      "artifact_repo_id": null,
+      "artifact_filename": null,
+      "parameter_count": 26544131376,
+      "published_at": "2026-03-11T21:25:57.000Z",
+      "downloads": 10439717,
+      "quant_type": "Q6_K",
+      "file_size_bytes": 21567106743,
+      "vram_required_bytes": 23144243715,
+      "vram_available_bytes": 49392123904,
+      "uses_multi_gpu": false,
+      "multi_gpu_effective_vram_bytes": null,
+      "estimated_tok_per_sec": 40.76761133603238,
+      "speed_confidence": "low",
+      "speed_range_tok_per_sec": [
+        14.3,
+        81.5
+      ],
+      "speed_notes": [
+        "Speed is estimated from memory bandwidth, quantization, backend, and fit type.",
+        "MoE speed uses active parameters plus a bandwidth-scaled dispatch/read floor.",
+        "Apple Silicon MoE throughput is especially sensitive to Metal/MLX runtime kernels.",
+        "This is a synthetic GGUF estimate for an official repo, not a measured GGUF file."
+      ],
+      "quality_score": 84.55,
+      "benchmark_status": "direct",
+      "benchmark_source": "direct",
+      "benchmark_confidence": 1.0,
+      "fit_type": "full_gpu",
+      "can_run": true,
+      "warnings": [],
+      "license": "apache-2.0"
+    },
+    {
+      "rank": 3,
+      "model_id": "Qwen/Qwen3-30B-A3B",
+      "artifact_repo_id": "Qwen/Qwen3-30B-A3B-GGUF",
+      "artifact_filename": "Qwen3-30B-A3B-Q8_0.gguf",
+      "parameter_count": 30532122624,
+      "published_at": "2025-04-27T03:43:05.000Z",
+      "downloads": 2656253,
+      "quant_type": "Q8_0",
+      "file_size_bytes": 32440380288,
+      "vram_required_bytes": 33906541056,
+      "vram_available_bytes": 49392123904,
+      "uses_multi_gpu": false,
+      "multi_gpu_effective_vram_bytes": null,
+      "estimated_tok_per_sec": 35.539764705882355,
+      "speed_confidence": "low",
+      "speed_range_tok_per_sec": [
+        12.4,
+        71.1
+      ],
+      "speed_notes": [
+        "Speed is estimated from memory bandwidth, quantization, backend, and fit type.",
+        "MoE speed uses active parameters plus a bandwidth-scaled dispatch/read floor.",
+        "Apple Silicon MoE throughput is especially sensitive to Metal/MLX runtime kernels.",
+        "This is a synthetic GGUF estimate for an official repo, not a measured GGUF file."
+      ],
+      "quality_score": 84.13,
+      "benchmark_status": "direct",
+      "benchmark_source": "direct",
+      "benchmark_confidence": 1.0,
+      "fit_type": "full_gpu",
+      "can_run": true,
+      "warnings": [],
+      "license": "apache-2.0"
+    }
+  ]
+}
