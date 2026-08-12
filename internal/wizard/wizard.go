@@ -1050,7 +1050,7 @@ func (m *Model) renderRipples() string {
 func (m Model) welcomeView() string {
 	s := m.renderRipples()
 	if m.version != "" {
-		v := lipgloss.PlaceHorizontal(m.Width, lipgloss.Right, dimStyle.Render("v"+m.version))
+		v := lipgloss.PlaceHorizontal(m.Width, lipgloss.Right, dimStyle.Render("v"+strings.TrimPrefix(m.version, "v")))
 		s += "\n" + v
 	}
 	return s
