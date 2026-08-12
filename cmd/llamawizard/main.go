@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -115,8 +116,13 @@ func checkForUpdates() {
 		return
 	}
 
-	fmt.Printf("Updated to %s. Please restart.\n", release.TagName)
-	os.Exit(0)
+	execPath, err := os.Executable()
+	if err != nil {
+		fmt.Printf("Updated to %s. Please restart.\n", release.TagName)
+		os.Exit(0)
+	}
+	fmt.Printf("Updated to %s. Restarting...\n", release.TagName)
+	syscall.Exec(execPath, os.Args, os.Environ())
 }
 
 func printHelp() {
