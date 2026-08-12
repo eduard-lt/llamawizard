@@ -33,7 +33,7 @@ After setup, it doubles as an ongoing management tool: start, stop, restart, sta
 Already have Go, Homebrew, and Xcode Command Line Tools set up?
 
 ```bash
-go install github.com/eduard-lt/llamawizard_dev/cmd/llamawizard@latest
+go install github.com/eduard-lt/llamawizard/cmd/llamawizard@latest
 export PATH="$HOME/go/bin:$PATH"   # add to ~/.zshrc if not already there
 llamawizard
 ```
@@ -120,7 +120,7 @@ Or use the equivalent `HUGGINGFACE_HUB_TOKEN`. Without a token, HuggingFace thro
 ### go install (requires Go 1.26+)
 
 ```bash
-go install github.com/eduard-lt/llamawizard_dev/cmd/llamawizard@latest
+go install github.com/eduard-lt/llamawizard/cmd/llamawizard@latest
 ```
 
 Puts `llamawizard` in `$GOPATH/bin`. If you haven't already, add it to your PATH:
@@ -148,7 +148,7 @@ llamawizard --version
 ### Manual build
 
 ```bash
-git clone https://github.com/eduard-lt/llamawizard_dev.git
+git clone https://github.com/eduard-lt/llamawizard.git
 cd llamawizard
 go build -o llamawizard ./cmd/llamawizard/
 ./llamawizard
