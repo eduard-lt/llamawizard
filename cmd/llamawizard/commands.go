@@ -4,9 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -403,16 +401,16 @@ func runModelsShow(name string) {
 }
 
 func runModelsAdd(args []string) {
-	if len(args) >= 2 && args[0] == "--link" {
-		url := args[1]
-		modelName := ""
-		for i := 2; i < len(args); i++ {
-			if args[i] == "--name" && i+1 < len(args) {
-				modelName = args[i+1]
-				break
-			}
+	// Just --link without a URL: launch the guided tutorial TUI.
+	if len(args) == 1 && args[0] == "--link" {
+		if url := runLinkTutorial(); url != "" {
+			addModelFromURL(url, "")
 		}
-		addModelFromURL(url, modelName)
+		return
+	}
+
+	if len(args) >= 2 && args[0] == "--link" {
+		addModelFromURL(args[1], extractName(args[2:]))
 		return
 	}
 
@@ -643,115 +641,6 @@ func printTail(path string, n int) {
 	for _, line := range lines[start:] {
 		fmt.Println("  " + line)
 	}
-}
-
-func addModelFromURL(url string, name string) {
-	st, err := state.Load("")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading state: %v\n", err)
-		os.Exit(1)
-	}
-	if st.Port == 0 {
-		fmt.Println("Run 'llamawizard' first to set up the wizard.")
-		os.Exit(1)
-	}
-
-	parts := strings.Split(url, "/")
-	filename := parts[len(parts)-1]
-
-	slug := name
-	if slug == "" {
-		slug = strings.Split(filename, ".")[0]
-		slug = strings.ReplaceAll(slug, "_", "-")
-		slug = strings.ToLower(slug)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Cannot determine home directory: %v\n", err)
-		os.Exit(1)
-	}
-	destDir := filepath.Join(home, "models", slug)
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "Creating directory %s: %v\n", destDir, err)
-		os.Exit(1)
-	}
-	destPath := filepath.Join(destDir, filename)
-
-	fmt.Printf("Downloading %s...\n", filename)
-
-	client := &http.Client{Timeout: 30 * time.Minute}
-	resp, err := client.Get(url)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Download failed: %v\n", err)
-		os.Exit(1)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "Download returned status %d\n", resp.StatusCode)
-		os.Exit(1)
-	}
-
-	f, err := os.Create(destPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Creating file: %v\n", err)
-		os.Exit(1)
-	}
-	defer func() { _ = f.Close() }()
-
-	written, err := io.Copy(f, resp.Body)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Saving file: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Downloaded %s (%.1f MB)\n", filename, float64(written)/(1024*1024))
-
-	st.Models = append(st.Models, state.ModelEntry{
-		Slug:        slug,
-		Name:        slug,
-		File:        filename,
-		Quant:       "custom",
-		SizeBytes:   written,
-		InstalledAt: time.Now().Format(time.RFC3339),
-	})
-	if err := st.Save(""); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving state: %v\n", err)
-		os.Exit(1)
-	}
-
-	hw, err := hardware.Detect()
-	if err != nil {
-		log.Printf("Warning: hardware detection failed: %v", err)
-	}
-	yamlBytes, err := llamaswap.GenerateConfig(st.Models, st.Port, st.APIKey, st.LlamaCppPath, hw)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating config: %v\n", err)
-		os.Exit(1)
-	}
-
-	configPath := state.DefaultConfigPath()
-	if err := llamaswap.ForceWrite(configPath, yamlBytes); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing config: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Config updated at %s\n", configPath)
-
-	plistPath, err := defaultPlistPath()
-	if err == nil {
-		if err := launchd.Stop(); err != nil {
-			log.Printf("Warning: failed to stop service: %v", err)
-		}
-		if err := launchd.Start(plistPath); err != nil {
-			log.Printf("Warning: failed to start service: %v", err)
-			fmt.Println("Service may not have restarted — check 'llamawizard status'")
-		} else {
-			fmt.Println("Service restarted.")
-		}
-	}
-
-	fmt.Printf("\nModel '%s' added successfully.\n", slug)
-	fmt.Println("Run 'llamawizard status' to verify.")
 }
 
 func defaultPlistPath() (string, error) {

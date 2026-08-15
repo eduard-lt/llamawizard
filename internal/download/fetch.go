@@ -26,7 +26,15 @@ var hfResolveURL = func(repoID, filename string) string {
 // first and renaming atomically on success. Supports range-resume: if a
 // .partial file already exists it sends Range: bytes=<offset>- and appends.
 func Download(f RemoteFile, destDir string, progress chan<- Progress) error {
-	return downloadWithClient(http.DefaultClient, f, destDir, progress)
+	return downloadFromURL(http.DefaultClient, hfResolveURL(f.RepoID, f.Filename), true, f, destDir, progress)
+}
+
+// DownloadURL fetches a raw URL into destDir under the given filename, using
+// the same resumable .partial logic as Download. No HF auth header is sent so
+// credentials are never leaked to third-party hosts.
+func DownloadURL(url, filename string, size int64, destDir string, progress chan<- Progress) error {
+	f := RemoteFile{Filename: filename, Size: size}
+	return downloadFromURL(http.DefaultClient, url, false, f, destDir, progress)
 }
 
 var progressInterval = 100 * time.Millisecond
@@ -36,7 +44,8 @@ type progressReader struct {
 	progress chan<- Progress
 	filename string
 	total    int64
-	offset   int64
+	base     int64 // bytes already on disk before this session (resume offset)
+	offset   int64 // bytes read this session
 	lastSent time.Time
 	started  time.Time
 }
@@ -54,7 +63,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 			speed = int64(float64(pr.offset) / elapsed)
 		}
 		pr.progress <- Progress{
-			Downloaded:  pr.offset,
+			Downloaded:  pr.base + pr.offset,
 			Total:       pr.total,
 			Filename:    pr.filename,
 			BytesPerSec: speed,
@@ -64,7 +73,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func downloadWithClient(client *http.Client, f RemoteFile, destDir string, progress chan<- Progress) error {
+func downloadFromURL(client *http.Client, url string, useHFToken bool, f RemoteFile, destDir string, progress chan<- Progress) error {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("creating dest dir: %w", err)
 	}
@@ -91,7 +100,6 @@ func downloadWithClient(client *http.Client, f RemoteFile, destDir string, progr
 		offset = stat.Size()
 	}
 
-	url := hfResolveURL(f.RepoID, f.Filename)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)
@@ -99,8 +107,10 @@ func downloadWithClient(client *http.Client, f RemoteFile, destDir string, progr
 	if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
-	if tok := hfToken(); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
+	if useHFToken {
+		if tok := hfToken(); tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
 	}
 
 	resp, err := client.Do(req)
@@ -112,6 +122,13 @@ func downloadWithClient(client *http.Client, f RemoteFile, destDir string, progr
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("download returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	// If we requested a range but the server ignored it (returned 200 instead
+	// of 206), restart from scratch so we don't append a full copy onto the
+	// existing partial file.
+	if offset > 0 && resp.StatusCode != http.StatusPartialContent {
+		offset = 0
 	}
 
 	// Open .partial for writing (create or append).
@@ -132,7 +149,7 @@ func downloadWithClient(client *http.Client, f RemoteFile, destDir string, progr
 		progress: progress,
 		total:    f.Size,
 		filename: f.Filename,
-		offset:   offset,
+		base:     offset,
 	}
 	written, err := io.Copy(fw, pr)
 	if err != nil {
@@ -147,7 +164,7 @@ func downloadWithClient(client *http.Client, f RemoteFile, destDir string, progr
 		elapsed := time.Since(pr.started).Seconds()
 		var speed int64
 		if elapsed > 0.1 {
-			speed = int64(float64(totalDownloaded) / elapsed)
+			speed = int64(float64(written) / elapsed)
 		}
 		progress <- Progress{
 			Downloaded:  totalDownloaded,

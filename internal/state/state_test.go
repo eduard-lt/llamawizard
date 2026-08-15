@@ -170,6 +170,45 @@ func TestDeriveSlugFromModelID(t *testing.T) {
 	}
 }
 
+func TestDeriveSlugWithQuant(t *testing.T) {
+	tests := []struct {
+		modelID  string
+		quant    string
+		expected string
+	}{
+		{"gemma-4-26B-A4B-it", "Q6_K", "gemma-4-26b-a4b-it-q6-k"},
+		{"Qwen3.8-27B", "Q5_K_XL", "qwen3.8-27b-q5-k-xl"},
+		{"Qwen3.8-27B", "Q4_K_XL", "qwen3.8-27b-q4-k-xl"},
+		{"Qwen3.8-27B", "IQ4_NL", "qwen3.8-27b-iq4-nl"},
+		{"gemma-4-26B-A4B-it", "", "gemma-4-26b-a4b-it"},
+		{"gemma-4-26B-A4B-it", "custom", "gemma-4-26b-a4b-it"},
+	}
+
+	for _, tc := range tests {
+		got := DeriveSlugWithQuant(tc.modelID, tc.quant)
+		if got != tc.expected {
+			t.Errorf("DeriveSlugWithQuant(%q, %q) = %q, want %q", tc.modelID, tc.quant, got, tc.expected)
+		}
+	}
+}
+
+func TestSanitizeSlug(t *testing.T) {
+	tests := map[string]string{
+		"Q5_K_XL":   "q5-k-xl",
+		"Q4_K_M":    "q4-k-m",
+		"IQ4_NL":    "iq4-nl",
+		" Q6 K ":    "q6-k",
+		"custom":    "custom",
+		"":          "",
+		"-already-": "already",
+	}
+	for in, want := range tests {
+		if got := SanitizeSlug(in); got != want {
+			t.Errorf("SanitizeSlug(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestDefaultPath(t *testing.T) {
 	p := DefaultPath()
 	if p == "" {

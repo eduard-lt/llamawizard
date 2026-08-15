@@ -349,3 +349,58 @@ func TestDownload_SkipsWhenFileSizeMismatch(t *testing.T) {
 		t.Error("expected error when file size mismatches, got nil")
 	}
 }
+
+func TestDownloadURL_ResumesFromPartial(t *testing.T) {
+	ts := mockHFServer(t, testPayload)
+	defer ts.Close()
+
+	destDir := t.TempDir()
+
+	half := len(testPayload) / 2
+	partialPath := filepath.Join(destDir, "model.gguf.partial")
+	if err := os.WriteFile(partialPath, testPayload[:half], 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := DownloadURL(ts.URL, "model.gguf", int64(len(testPayload)), destDir, nil); err != nil {
+		t.Fatalf("DownloadURL failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(destDir, "model.gguf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, testPayload) {
+		t.Errorf("content mismatch after resume: got %q", data)
+	}
+	if _, err := os.Stat(partialPath); !os.IsNotExist(err) {
+		t.Error(".partial still exists after successful resume")
+	}
+}
+
+func TestDownloadURL_RestartsWhenRangeIgnored(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(testPayload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(testPayload)
+	}))
+	defer ts.Close()
+
+	destDir := t.TempDir()
+	partialPath := filepath.Join(destDir, "model.gguf.partial")
+	if err := os.WriteFile(partialPath, []byte("garbage partial data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := DownloadURL(ts.URL, "model.gguf", int64(len(testPayload)), destDir, nil); err != nil {
+		t.Fatalf("DownloadURL failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(destDir, "model.gguf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, testPayload) {
+		t.Errorf("content mismatch after range-ignored restart: got %q", data)
+	}
+}

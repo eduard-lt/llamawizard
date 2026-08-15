@@ -110,3 +110,54 @@ func hfToken() string {
 	}
 	return os.Getenv("HUGGINGFACE_HUB_TOKEN")
 }
+
+// ListGGUFFiles fetches the file tree for a HuggingFace repo and returns
+// all .gguf files with their sizes. Useful for prompting the user to pick
+// a specific quantization from a --link URL that points to a repo page.
+func ListGGUFFiles(repo string) ([]RemoteFile, error) {
+	url := fmt.Sprintf("https://huggingface.co/api/models/%s/tree/main", repo)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	if tok := hfToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching HF tree: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HF API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var entries []hfTreeEntry
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return nil, fmt.Errorf("parsing HF tree JSON: %w", err)
+	}
+
+	var files []RemoteFile
+	for _, e := range entries {
+		if e.Type != "file" || !strings.HasSuffix(e.Path, ".gguf") {
+			continue
+		}
+		// Skip non-standard prefixes.
+		lower := strings.ToLower(e.Path)
+		if strings.HasPrefix(lower, "mtp-") || strings.HasPrefix(lower, "dflash-") {
+			continue
+		}
+		files = append(files, RemoteFile{
+			RepoID:   repo,
+			Filename: e.Path,
+			Size:     e.Size,
+			IsMmproj: strings.HasPrefix(lower, "mmproj-"),
+		})
+	}
+
+	return files, nil
+}
