@@ -42,6 +42,24 @@ func IsInstalled() bool {
 	return err == nil
 }
 
+// CurrentDefaultModel returns pi's current default model ID, or "" if it is
+// not configured or cannot be read.
+func CurrentDefaultModel() string {
+	path, err := settingsPath()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var sf settingsFile
+	if err := json.Unmarshal(data, &sf); err != nil {
+		return ""
+	}
+	return sf.DefaultModel
+}
+
 func Install() error {
 	cmd := exec.Command("npm", "install", "-g", "@earendil-works/pi-coding-agent")
 	var stderr bytes.Buffer

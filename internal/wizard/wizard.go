@@ -790,7 +790,7 @@ func (m Model) handleModelSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(m.candidates) {
 			return m, nil
 		}
-		slug := state.DeriveSlugFromModelID(m.candidates[m.cursor].ModelID)
+		slug := state.DeriveSlugWithQuant(m.candidates[m.cursor].ModelID, m.candidates[m.cursor].QuantType)
 		if !m.installedSlugs[slug] {
 			m.selected[m.cursor] = !m.selected[m.cursor]
 		}
@@ -1190,7 +1190,7 @@ func (m Model) modelSelectView() string {
 	b.WriteString("\n")
 
 	for i, c := range m.candidates {
-		slug := state.DeriveSlugFromModelID(c.ModelID)
+		slug := state.DeriveSlugWithQuant(c.ModelID, c.QuantType)
 		installed := m.installedSlugs[slug]
 		selected := m.selected[i]
 		isCursor := i == m.cursor
@@ -1634,7 +1634,7 @@ func selectedModels(m Model) []state.ModelEntry {
 				filename = *c.ArtifactFilename
 			}
 			models = append(models, state.ModelEntry{
-				Slug:      state.DeriveSlugFromModelID(c.ModelID),
+				Slug:      state.DeriveSlugWithQuant(c.ModelID, c.QuantType),
 				Name:      c.ModelID,
 				HFRepo:    repo,
 				Quant:     c.QuantType,
@@ -1744,7 +1744,7 @@ func downloadAll(ch chan<- tea.Msg, indices []int, candidates []whichllm.ModelCa
 		var combinedDownloaded int64
 		for _, f := range files {
 			home, _ := os.UserHomeDir()
-			slug := state.DeriveSlugFromModelID(c.ModelID)
+			slug := state.DeriveSlugWithQuant(c.ModelID, c.QuantType)
 			destDir := filepath.Join(home, "models", slug)
 
 			progCh := make(chan download.Progress, 20)
@@ -1786,7 +1786,7 @@ func downloadAll(ch chan<- tea.Msg, indices []int, candidates []whichllm.ModelCa
 		if allOk {
 			ch <- dlProgressMsg{
 				modelIdx: i,
-				slug:     state.DeriveSlugFromModelID(c.ModelID),
+				slug:     state.DeriveSlugWithQuant(c.ModelID, c.QuantType),
 				filename: mainFile,
 				repo:     resolvedRepo,
 				quant:    c.QuantType,

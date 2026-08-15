@@ -81,6 +81,35 @@ func DeriveSlugFromModelID(modelID string) string {
 	return strings.ToLower(name)
 }
 
+// SanitizeSlug lowercases a string, converts underscores and spaces to dashes,
+// and strips characters other than [a-z0-9.-]. Leading/trailing dashes are
+// removed. It is used to turn quantization names into slug-safe suffixes.
+func SanitizeSlug(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "_", "-")
+	s = strings.ReplaceAll(s, " ", "-")
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '.':
+			b.WriteRune(r)
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// DeriveSlugWithQuant produces a unique slug from a model ID and quantization,
+// e.g. ("gemma-4-26B-A4B-it", "Q6_K") → "gemma-4-26b-a4b-it-q6-k". The quant
+// suffix keeps different quantizations of the same model distinct.
+func DeriveSlugWithQuant(modelID, quant string) string {
+	base := DeriveSlugFromModelID(modelID)
+	q := SanitizeSlug(quant)
+	if q == "" || q == "custom" {
+		return base
+	}
+	return base + "-" + q
+}
+
 // DefaultPath returns ~/.local/ai/state.json.
 func DefaultPath() string {
 	home, err := os.UserHomeDir()

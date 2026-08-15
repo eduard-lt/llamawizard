@@ -30,6 +30,12 @@ func init() {
 }
 
 func main() {
+	// Normalize model slugs (ensure each includes its quantization) and repair
+	// any duplicates. No-op unless changes are needed.
+	if err := migrateSlugs(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: model slug migration failed: %v\n", err)
+	}
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "status":
@@ -148,7 +154,8 @@ SERVICE
 MODELS
   models list                        List configured models
   models add                         Add a model (interactive)
-  models add --link <url> [--name]   Add a model from a direct download URL
+  models add --link <url> [name]     Add a model from a link (file or repo page)
+  models add --link                  Open a guided tutorial for link formats
   models show <name>                 Show a model's config and file path
   models remove <name>               Remove from config only (keeps file on disk)
   models delete <name> [--yes]       Remove from config AND delete the file
@@ -168,7 +175,8 @@ MAINTENANCE
   help [command]            Show help (or help for a specific command)
 
 Examples:
-  llamawizard models add --link https://example.com/model.gguf --name qwen3
+  llamawizard models add --link https://huggingface.co/unsloth/Qwen3.8-27B-GGUF
+  llamawizard models add --link https://example.com/model.gguf my-model
   llamawizard models delete qwen3 --yes
   llamawizard logs -f`)
 }
@@ -187,12 +195,13 @@ func printCommandHelp(cmd string) {
 		fmt.Printf("llamawizard %s — Manage the llama-swap LaunchAgent service.\n", cmd)
 	case "models":
 		fmt.Println("llamawizard models <list|add|show|remove|delete> — Manage models.")
-		fmt.Println("  models list                List configured models")
-		fmt.Println("  models add                 Add a model interactively")
-		fmt.Println("  models add --link <url>    Add from direct URL")
-		fmt.Println("  models show <name>         Show model details")
-		fmt.Println("  models remove <name>       Remove from config (keeps file)")
-		fmt.Println("  models delete <name> --yes Remove config and delete file")
+		fmt.Println("  models list                 List configured models")
+		fmt.Println("  models add                  Add a model interactively")
+		fmt.Println("  models add --link <url>     Add from a link (direct .gguf or HF repo page)")
+		fmt.Println("  models add --link           Open a guided tutorial for link formats")
+		fmt.Println("  models show <name>          Show model details")
+		fmt.Println("  models remove <name>        Remove from config (keeps file)")
+		fmt.Println("  models delete <name> --yes  Remove config and delete file")
 	case "config":
 		fmt.Println("llamawizard config <show|path> — View configuration.")
 		fmt.Println("  config show   Print the active llama-swap config")
