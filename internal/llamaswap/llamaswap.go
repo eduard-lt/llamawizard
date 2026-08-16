@@ -381,21 +381,32 @@ type config struct {
 //	    description: "..."
 //	    cmd: |
 //	      /path/to/llama-server
-//	      --host 127.0.0.1 --port ${PORT}
-//	      --model ~/models/my-model/model.gguf
+//	      --host
+//	      127.0.0.1
+//	      --port
+//	      ${PORT}
+//	      --model '/Users/x/models/my-model/model.gguf'
 //	      -ngl 999
 //	      --ctx-size 32768
 //	      --jinja
 //	    aliases:
 //	      - alias-one
 //
-// Model file paths are derived as ~/models/<slug>/<file>.gguf.
+// The proxy listen port is not part of this config: it is passed to
+// launchd.WritePlist as the -listen flag. ${PORT} is a per-model runtime
+// macro that llama-swap allocates from its own startPort range (default
+// 5800) — it is not the proxy port.
+//
+// Model file paths are absolute (~/models/<slug>/<file> expanded) and
+// single-quoted: llama-swap does not run a shell, it tokenizes cmd with
+// POSIX shlex, so the quotes are the only thing protecting spaces, parens
+// and quotes in paths.
 // If a model entry has Mmproj set, --mmproj is included in the cmd.
 // Sampling params (Temperature, TopK, TopP, RepeatPenalty) are only
 // emitted when non-zero. CtxSize defaults to a hardware-aware smart
 // calculation when zero — falling back to 32768 if GGUF metadata or
 // RAM detection is unavailable.
-func GenerateConfig(models []state.ModelEntry, port int, apiKey string, llamaServerPath string, hw hardware.HardwareInfo) ([]byte, error) {
+func GenerateConfig(models []state.ModelEntry, apiKey string, llamaServerPath string, hw hardware.HardwareInfo) ([]byte, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("getting home directory: %w", err)
@@ -435,9 +446,10 @@ func GenerateConfig(models []state.ModelEntry, port int, apiKey string, llamaSer
 			desc = fmt.Sprintf("%s %s", m.Quant, name)
 		}
 
+		modelPath := filepath.Join(home, "models", m.Slug, m.File)
+
 		ctxSize := m.CtxSize
 		if ctxSize == 0 {
-			modelPath := filepath.Join(home, "models", m.Slug, m.File)
 			r := calc.CalcSingle(modelPath, m.SizeBytes, true)
 			if !r.UsedDefault {
 				ctxSize = r.CtxSize
@@ -445,18 +457,17 @@ func GenerateConfig(models []state.ModelEntry, port int, apiKey string, llamaSer
 				ctxSize = ctxcalc.DefaultCtxSize
 			}
 		}
-		modelPath := filepath.Join(home, "models", m.Slug, m.File)
 
 		var args []string
 		args = append(args,
-			llamaServerPath,
+			shellQuote(llamaServerPath),
 			"--host", "127.0.0.1",
 			"--port", "${PORT}",
-			fmt.Sprintf("--model %s", modelPath),
+			fmt.Sprintf("--model %s", shellQuote(modelPath)),
 		)
 		if m.Mmproj != "" {
 			mmprojPath := filepath.Join(home, "models", m.Slug, m.Mmproj)
-			args = append(args, fmt.Sprintf("--mmproj %s", mmprojPath))
+			args = append(args, fmt.Sprintf("--mmproj %s", shellQuote(mmprojPath)))
 		}
 		args = append(args,
 			"-ngl 999",
@@ -494,6 +505,18 @@ func GenerateConfig(models []state.ModelEntry, port int, apiKey string, llamaSer
 	}
 
 	return yamlBytes, nil
+}
+
+// shellQuote wraps s in single quotes so llama-swap's shlex-based cmd
+// tokenizer keeps it as a single argument. llama-swap does not run a
+// shell: it splits cmd with POSIX shlex, so an unquoted space or
+// parenthesis would split the path into multiple arguments, and an
+// unquoted quote character would be stripped silently. A literal single
+// quote is escaped the standard shell way — close the quote, emit a
+// backslash-escaped quote, reopen the quote — which shlex re-joins into
+// the original character.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // titleCase capitalizes the first letter of each word.

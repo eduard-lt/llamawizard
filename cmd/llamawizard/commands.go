@@ -525,7 +525,7 @@ func runModelsDelete(name string, skipConfirm bool) {
 
 func regenerateConfig(st *state.State) {
 	hw, _ := hardware.Detect()
-	yamlBytes, err := llamaswap.GenerateConfig(st.Models, st.Port, st.APIKey, st.LlamaCppPath, hw)
+	yamlBytes, err := llamaswap.GenerateConfig(st.Models, st.APIKey, st.LlamaCppPath, hw)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating config: %v\n", err)
 		return

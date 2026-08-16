@@ -1538,7 +1538,7 @@ func runBuildSwap() tea.Cmd {
 func runGenerateConfig(m Model) tea.Cmd {
 	return func() tea.Msg {
 		models := selectedModels(m)
-		yamlBytes, _ := llamaswap.GenerateConfig(models, m.port, m.apiKey, m.llamaCppPath, m.hardware)
+		yamlBytes, _ := llamaswap.GenerateConfig(models, m.apiKey, m.llamaCppPath, m.hardware)
 		return configGeneratedMsg{yamlBytes: yamlBytes}
 	}
 }

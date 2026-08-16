@@ -261,7 +261,7 @@ func TestGenerateConfig_Basic(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatalf("GenerateConfig failed: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestGenerateConfig_Mmproj(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "key123", "/usr/local/bin/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "key123", "/usr/local/bin/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestGenerateConfig_SamplingParams(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestGenerateConfig_NoSamplingParams(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +412,7 @@ func TestGenerateConfig_Aliases(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +436,7 @@ func TestGenerateConfig_MultipleModels(t *testing.T) {
 		{Slug: "model-c", Name: "Model C", Quant: "Q6", File: "c.gguf"},
 	}
 
-	data, err := GenerateConfig(models, 9000, "secret", "/srv/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "secret", "/srv/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +454,7 @@ func TestGenerateConfig_DefaultNameAndDescription(t *testing.T) {
 		{Slug: "my-cool-model", Quant: "Q4_K_M", File: "model.gguf"},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestGenerateConfig_CustomDescription(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +497,7 @@ func TestGenerateConfig_EmptyApiKey(t *testing.T) {
 		{Slug: "m", Name: "M", Quant: "Q4", File: "m.gguf"},
 	}
 
-	data, err := GenerateConfig(models, 8080, "", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +513,7 @@ func TestGenerateConfig_ModelPath(t *testing.T) {
 		{Slug: "test-slug", Name: "Test", Quant: "Q4", File: "test.gguf"},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,7 +564,7 @@ func TestGenerateConfig_MatchesUserConfigStructure(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/Users/eduard/dev/llama.cpp/build/bin/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/Users/eduard/dev/llama.cpp/build/bin/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -847,7 +847,7 @@ func TestGenerateConfig_EmptyPathResolves(t *testing.T) {
 		{Slug: "test", Name: "Test", Quant: "Q4", File: "test.gguf"},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatalf("GenerateConfig with empty path failed: %v", err)
 	}
@@ -872,7 +872,7 @@ func TestGenerateConfig_EmptyPath_NoBinary(t *testing.T) {
 		{Slug: "test", Name: "Test", Quant: "Q4", File: "test.gguf"},
 	}
 
-	_, err := GenerateConfig(models, 8080, "dummy", "", hardware.HardwareInfo{})
+	_, err := GenerateConfig(models, "dummy", "", hardware.HardwareInfo{})
 	if err == nil {
 		t.Fatal("GenerateConfig with empty path and no binary should return an error")
 	}
@@ -887,7 +887,7 @@ func TestValidateConfigYAML_Valid(t *testing.T) {
 	models := []state.ModelEntry{
 		{Slug: "test", Name: "Test", Quant: "Q4", File: "test.gguf"},
 	}
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -911,7 +911,7 @@ func TestValidateConfigYAML_SpacesOnly(t *testing.T) {
 	models := []state.ModelEntry{
 		{Slug: "test", Name: "Test", Quant: "Q4", File: "test.gguf"},
 	}
-	data, err := GenerateConfig(models, 8080, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -963,7 +963,7 @@ func TestGenerateConfig_IndentationConsistency(t *testing.T) {
 		{Slug: "a", Name: "A", Quant: "Q4", File: "a.gguf"},
 		{Slug: "b", Name: "B", Quant: "Q4", File: "b.gguf"},
 	}
-	data, err := GenerateConfig(models, 8080, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1026,6 +1026,68 @@ func TestWriteConfig_ForceWrite_ValidatesAfterMkdir(t *testing.T) {
 	_, err := os.Stat(filepath.Dir(path))
 	if !os.IsNotExist(err) {
 		t.Error("parent directories should not be created for invalid content")
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"/a/b.gguf", "'/a/b.gguf'"},
+		{"/a/my model.gguf", "'/a/my model.gguf'"},
+		{"/a/model (1).gguf", "'/a/model (1).gguf'"},
+		{`/a/it's.gguf`, "'/a/it'\\''s.gguf'"},
+		{"", "''"},
+	}
+	for _, tt := range tests {
+		if got := shellQuote(tt.in); got != tt.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestGenerateConfig_PathWithSpacesAndParens(t *testing.T) {
+	models := []state.ModelEntry{
+		{Slug: "test-slug", Name: "Test", Quant: "Q4", File: "my model (1).gguf"},
+	}
+
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	yamlStr := string(data)
+	home, _ := os.UserHomeDir()
+	want := fmt.Sprintf("--model '%s'", filepath.Join(home, "models", "test-slug", "my model (1).gguf"))
+	if !strings.Contains(yamlStr, want) {
+		t.Errorf("model path should be single-quoted as %q, got:\n%s", want, yamlStr)
+	}
+	if err := ValidateConfigYAML(data); err != nil {
+		t.Errorf("generated config should validate: %v", err)
+	}
+}
+
+func TestGenerateConfig_PathWithSingleQuote(t *testing.T) {
+	models := []state.ModelEntry{
+		{Slug: "test-slug", Name: "Test", Quant: "Q4", File: "it's.gguf"},
+	}
+
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	yamlStr := string(data)
+	home, _ := os.UserHomeDir()
+	// A literal single quote must be escaped as '\'' inside the surrounding
+	// single quotes so shlex re-joins it into the original character.
+	want := fmt.Sprintf("--model '%s'", strings.ReplaceAll(filepath.Join(home, "models", "test-slug", "it's.gguf"), "'", `'\''`))
+	if !strings.Contains(yamlStr, want) {
+		t.Errorf("model path should escape the quote as %q, got:\n%s", want, yamlStr)
+	}
+	if err := ValidateConfigYAML(data); err != nil {
+		t.Errorf("generated config should validate: %v", err)
 	}
 }
 
