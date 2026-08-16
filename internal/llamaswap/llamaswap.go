@@ -554,9 +554,10 @@ func titleCase(s string) string {
 // or its content differs.
 //
 // If the file exists and is identical, returns changed=false immediately.
-// If the file exists and differs, returns changed=false along with a unified
-// diff string — it does NOT overwrite. The caller (wizard) should present
-// the diff to the user and call ForceWrite if they confirm.
+// If the file exists and differs, returns changed=false along with a
+// line-by-line diff (unified-style +/- prefixes, no hunk headers — it is for
+// display, not for patching) — it does NOT overwrite. The caller (wizard)
+// should present the diff to the user and call ForceWrite if they confirm.
 //
 // On first run (file doesn't exist), writes cleanly and returns changed=true.
 func WriteConfig(path string, newContent []byte) (changed bool, diff string, err error) {
@@ -646,7 +647,9 @@ func ValidateConfigYAML(data []byte) error {
 	return nil
 }
 
-// computeDiff produces a unified diff between old and new content.
+// computeDiff produces a unified-style, line-by-line diff between old and new
+// content: a ---/+++ header followed by each line prefixed with ' ', '+' or
+// '-'. No hunk headers or line numbers — the wizard renders it as-is.
 func computeDiff(filename string, old, new []byte) string {
 	linesOld := splitLines(old)
 	linesNew := splitLines(new)
