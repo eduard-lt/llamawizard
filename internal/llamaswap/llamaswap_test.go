@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -231,6 +233,51 @@ func TestDownloadTemp_SizeMismatch(t *testing.T) {
 	}
 	if err == nil {
 		t.Error("downloadTemp should fail on size mismatch")
+	}
+}
+
+// TestDownloadTemp_ClosesBodyOnNon200 pins the error-path contract: when
+// downloadTemp fails, it must release the response body itself — the caller
+// returns on the error and never invokes the returned cleanup. The server
+// tracks its connection state and asserts the client's connection is closed,
+// which only happens when the client closes the unread body.
+func TestDownloadTemp_ClosesBodyOnNon200(t *testing.T) {
+	ls, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connClosed := make(chan struct{})
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("not found"))
+		}),
+	}
+	srv.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			select {
+			case <-connClosed:
+			default:
+				close(connClosed)
+			}
+		}
+	}
+	go func() { _ = srv.Serve(ls) }()
+	defer srv.Close()
+
+	_, _, err = downloadTemp("http://"+ls.Addr().String(), 0)
+	if err == nil {
+		t.Fatal("downloadTemp should fail on non-200 response")
+	}
+	// Note: the returned cleanup is deliberately NOT called — that mirrors
+	// the production caller (installFromReleases), which returns on error
+	// and never runs the cleanup. The function must not rely on the caller
+	// to release the response body.
+
+	select {
+	case <-connClosed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server connection still open: response body was not closed on the non-200 error path")
 	}
 }
 

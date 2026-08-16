@@ -238,6 +238,11 @@ func findAsset(pattern string) (*releaseAsset, error) {
 }
 
 // downloadTemp fetches the URL into a temp file and returns its path plus a cleanup func.
+//
+// On error, downloadTemp has already released everything it allocated
+// (response body, temp file); the returned cleanup is a no-op, safe to
+// ignore or call. On success, the caller owns the temp file and must call
+// cleanup (e.g. via defer) to remove it.
 func downloadTemp(url string, expectedSize int64) (path string, cleanup func(), err error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -253,25 +258,22 @@ func downloadTemp(url string, expectedSize int64) (path string, cleanup func(), 
 	if err != nil {
 		return "", func() {}, fmt.Errorf("HTTP GET %s: %w", url, err)
 	}
-
-	cleanup = func() {
-		_ = resp.Body.Close()
-		_ = os.Remove(path)
-	}
+	// Close the body on every path: callers discard the returned cleanup on
+	// error, so the function itself must release the response.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", cleanup, fmt.Errorf("download returned status %d", resp.StatusCode)
+		return "", func() {}, fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
 	f, err := os.CreateTemp("", "llama-swap-*.tar.gz")
 	if err != nil {
-		return "", cleanup, fmt.Errorf("creating temp file: %w", err)
+		return "", func() {}, fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpPath := f.Name()
 
 	n, err := io.Copy(f, resp.Body)
 	_ = f.Close()
-	_ = resp.Body.Close()
 	if err != nil {
 		_ = os.Remove(tmpPath)
 		return "", func() {}, fmt.Errorf("writing download: %w", err)
@@ -282,8 +284,7 @@ func downloadTemp(url string, expectedSize int64) (path string, cleanup func(), 
 		return "", func() {}, fmt.Errorf("size mismatch: expected %d, got %d", expectedSize, n)
 	}
 
-	cleanup = func() { _ = os.Remove(tmpPath) }
-	return tmpPath, cleanup, nil
+	return tmpPath, func() { _ = os.Remove(tmpPath) }, nil
 }
 
 // extractBinary unpacks the tarball and places the llama-swap binary into binDir.
