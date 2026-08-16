@@ -449,6 +449,36 @@ func TestGenerateConfig_MultipleModels(t *testing.T) {
 	}
 }
 
+func TestGenerateConfig_DuplicateSlug(t *testing.T) {
+	models := []state.ModelEntry{
+		{Slug: "model-a", Name: "Model A", Quant: "Q4_K_M", File: "a1.gguf"},
+		{Slug: "model-a", Name: "Model A (2)", Quant: "Q4_K_M", File: "a2.gguf"},
+	}
+
+	_, err := GenerateConfig(models, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
+	if err == nil {
+		t.Fatal("expected error for duplicate slug, got nil")
+	}
+	if !strings.Contains(err.Error(), "model-a") {
+		t.Errorf("error should name the colliding model ID, got: %v", err)
+	}
+}
+
+func TestGenerateConfig_DuplicateHFRepoFallback(t *testing.T) {
+	models := []state.ModelEntry{
+		{Slug: "", HFRepo: "org/repo", Quant: "Q4_K_M", File: "a.gguf"},
+		{Slug: "", HFRepo: "org/repo", Quant: "Q4_K_M", File: "b.gguf"},
+	}
+
+	_, err := GenerateConfig(models, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
+	if err == nil {
+		t.Fatal("expected error for duplicate HFRepo fallback key, got nil")
+	}
+	if !strings.Contains(err.Error(), "org/repo") {
+		t.Errorf("error should name the colliding model ID, got: %v", err)
+	}
+}
+
 func TestGenerateConfig_DefaultNameAndDescription(t *testing.T) {
 	models := []state.ModelEntry{
 		{Slug: "my-cool-model", Quant: "Q4_K_M", File: "model.gguf"},

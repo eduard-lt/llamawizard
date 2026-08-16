@@ -128,9 +128,12 @@ func slugFromFilename(filename string) string {
 	return slugFromName(name)
 }
 
-// deriveSlug returns a unique slug. When a name is given it is used as the
-// base, but the quant is always appended so different quantizations of the
-// same model never collide.
+// deriveSlug derives a slug for a new model. When a name is given it is
+// used as the base, but the quant is always appended so different
+// quantizations of the same model never collide. It does not check against
+// already-installed models: re-adding a model whose slug already exists
+// produces a duplicate state entry, which llamaswap.GenerateConfig rejects
+// with an error.
 func deriveSlug(name, filename string) string {
 	if name != "" {
 		base := slugFromName(name)

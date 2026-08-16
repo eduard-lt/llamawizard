@@ -140,7 +140,10 @@ type buildDoneMsg struct {
 	llamaSwapPath string
 	err           error
 }
-type configGeneratedMsg struct{ yamlBytes []byte }
+type configGeneratedMsg struct {
+	yamlBytes []byte
+	err       error
+}
 type piSetupDoneMsg struct{ err error }
 type portCheckMsg struct {
 	free         bool
@@ -213,6 +216,7 @@ type Model struct {
 
 	configYAML []byte
 	configDiff string
+	configErr  error
 	configDone bool
 
 	portInput        textinput.Model
@@ -438,8 +442,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case configGeneratedMsg:
 		m.configYAML = msg.yamlBytes
-		_, diff, _ := llamaswap.WriteConfig(state.DefaultConfigPath(), msg.yamlBytes)
-		m.configDiff = diff
+		m.configErr = msg.err
+		if msg.err == nil {
+			_, diff, _ := llamaswap.WriteConfig(state.DefaultConfigPath(), msg.yamlBytes)
+			m.configDiff = diff
+		}
 		return m, nil
 
 	case piSetupDoneMsg:
@@ -603,34 +610,43 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case ScreenConfig:
-		if key == "enter" && m.configYAML != nil {
+		if key != "enter" {
+			return m, nil
+		}
+		if m.configErr == nil {
+			if m.configYAML == nil {
+				return m, nil // still generating
+			}
 			if err := llamaswap.ForceWrite(state.DefaultConfigPath(), m.configYAML); err != nil {
 				m.configDiff = errorStyle.Render("Failed to write config: " + err.Error())
 				return m, nil
 			}
-			m.configDone = true
-
-			if m.piOptIn || (m.State != nil && m.State.PiConfigured) {
-				m.State.PiConfigured = true
-				m.Screen = ScreenPiSetup
-				return m, tea.Sequence(
-					runPiInstall(),
-					runPiConfigureStep(m),
-				)
-			}
-
-			if m.addOnly {
-				m.Screen = ScreenHealth
-				return m, tea.Sequence(
-					restartServiceCmd(),
-					runHealthCheck(m.State.Port, modelIDs(m), m.State.APIKey),
-				)
-			}
-			m.Screen = ScreenPort
-			m.portInput.SetValue(fmt.Sprintf("%d", m.port))
-			m.portInput.Focus()
-			return m, nil
 		}
+		// When generation failed the write is skipped: the error is already
+		// on screen, and the flow continues so the health check can report
+		// the missing model instead of leaving the user stuck.
+		m.configDone = true
+
+		if m.piOptIn || (m.State != nil && m.State.PiConfigured) {
+			m.State.PiConfigured = true
+			m.Screen = ScreenPiSetup
+			return m, tea.Sequence(
+				runPiInstall(),
+				runPiConfigureStep(m),
+			)
+		}
+
+		if m.addOnly {
+			m.Screen = ScreenHealth
+			return m, tea.Sequence(
+				restartServiceCmd(),
+				runHealthCheck(m.State.Port, modelIDs(m), m.State.APIKey),
+			)
+		}
+		m.Screen = ScreenPort
+		m.portInput.SetValue(fmt.Sprintf("%d", m.port))
+		m.portInput.Focus()
+		return m, nil
 
 	case ScreenPiSetup:
 		if key == "enter" && m.piSetupDone && m.piErr != nil {
@@ -1334,6 +1350,11 @@ func (m Model) configView() string {
 	s := "Generating llama-swap configuration...\n\n"
 	ready := false
 	hasConflict := false
+	if m.configErr != nil {
+		s += errorStyle.Render(m.configErr.Error()) + "\n\n"
+		s += promptStyle.Render("Press Enter to continue without writing the configuration.")
+		return borderFor(false, true).Width(m.Width - 4).Render(s)
+	}
 	if m.configYAML != nil {
 		ready = !m.configDone
 		hasConflict = m.configDiff != ""
@@ -1538,8 +1559,8 @@ func runBuildSwap() tea.Cmd {
 func runGenerateConfig(m Model) tea.Cmd {
 	return func() tea.Msg {
 		models := selectedModels(m)
-		yamlBytes, _ := llamaswap.GenerateConfig(models, m.apiKey, m.llamaCppPath, m.hardware)
-		return configGeneratedMsg{yamlBytes: yamlBytes}
+		yamlBytes, err := llamaswap.GenerateConfig(models, m.apiKey, m.llamaCppPath, m.hardware)
+		return configGeneratedMsg{yamlBytes: yamlBytes, err: err}
 	}
 }
 

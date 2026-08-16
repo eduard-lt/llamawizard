@@ -406,6 +406,10 @@ type config struct {
 // emitted when non-zero. CtxSize defaults to a hardware-aware smart
 // calculation when zero — falling back to 32768 if GGUF metadata or
 // RAM detection is unavailable.
+//
+// Two entries mapping to the same model ID (same slug, or the same
+// HFRepo when the slug is empty) are rejected with an error: the models
+// map is keyed by that ID, so a duplicate would silently drop one model.
 func GenerateConfig(models []state.ModelEntry, apiKey string, llamaServerPath string, hw hardware.HardwareInfo) ([]byte, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -430,11 +434,22 @@ func GenerateConfig(models []state.ModelEntry, apiKey string, llamaServerPath st
 		cfg.ApiKeys = &[]string{apiKey}
 	}
 
-	for _, m := range models {
+	// seen maps each config key to the index of the first entry that uses
+	// it. The YAML models map is keyed by this ID, so a second entry with
+	// the same key would silently overwrite the first — reject instead.
+	seen := make(map[string]int, len(models))
+
+	for i, m := range models {
 		modelID := m.Slug
 		if modelID == "" {
 			modelID = m.HFRepo
 		}
+
+		if first, dup := seen[modelID]; dup {
+			return nil, fmt.Errorf("models[%d] and models[%d] share the llama-swap model ID %q (slugs %q and %q): the later entry would be silently dropped from the config — remove or rename one of them",
+				first, i, modelID, models[first].Slug, m.Slug)
+		}
+		seen[modelID] = i
 
 		name := m.Name
 		if name == "" {
