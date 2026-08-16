@@ -1,6 +1,8 @@
 package ctxcalc
 
 import (
+	"os"
+
 	"github.com/eduard-lt/llamawizard/internal/gguf"
 	"github.com/eduard-lt/llamawizard/internal/hardware"
 )
@@ -53,7 +55,11 @@ func New(hw hardware.HardwareInfo) *Calculator {
 //     n_kv_heads, and head_dim.
 //  2. Compute KV cache bytes per token.
 //  3. Determine usable RAM budget (total RAM minus safety margin).
-//  4. Subtract model file size from the budget to get RAM available for KV cache.
+//  4. Subtract the model's RAM footprint from the budget to get RAM available
+//     for KV cache. The footprint is modelSizeBytes, or the stat'd file size
+//     when that is unknown (the file must exist to be parsed). If the model
+//     alone meets or exceeds the usable budget, the KV budget is zero — not
+//     "all of RAM" — because there is nothing left for the cache.
 //  5. Solve max_ctx = available_for_kv / kv_bytes_per_token.
 //  6. Clamp to [MinCtxSize, min(MaxSaneCtxSize, n_ctx_train)].
 //  7. Snap to the nearest power-of-2 value.
@@ -70,13 +76,24 @@ func (c *Calculator) CalcSingle(modelPath string, modelSizeBytes int64, f16KVCac
 
 	bpt := meta.KVCacheBytesPerToken(f16KVCache)
 
+	// Model footprint in RAM. When the caller doesn't know the size (e.g.
+	// --link with a failed HEAD request), stat the file: it exists, since
+	// ReadMetadata just parsed it.
+	footprint := modelSizeBytes
+	if footprint <= 0 {
+		if st, err := os.Stat(modelPath); err == nil {
+			footprint = st.Size()
+		}
+	}
+
 	usableRAM := hardware.UsableRAMBudget(c.hw.RAM)
 
+	// RAM left for the KV cache. If the model alone meets or exceeds the
+	// usable budget, nothing is left — flooring at zero instead of
+	// "all of RAM" avoids sizing a context that cannot possibly fit.
 	availableForKV := int64(0)
-	if modelSizeBytes > 0 && usableRAM > uint64(modelSizeBytes) {
-		availableForKV = int64(usableRAM) - modelSizeBytes
-	} else if usableRAM > 0 {
-		availableForKV = int64(usableRAM)
+	if int64(usableRAM) > footprint {
+		availableForKV = int64(usableRAM) - footprint
 	}
 
 	var maxByRAM uint64
@@ -97,10 +114,8 @@ func (c *Calculator) CalcSingle(modelPath string, modelSizeBytes int64, f16KVCac
 		ctx = MinCtxSize
 	}
 
+	// snapToPowerOf2 never returns below MinCtxSize, so no re-clamp is needed.
 	ctx = snapToPowerOf2(ctx)
-	if ctx < MinCtxSize {
-		ctx = MinCtxSize
-	}
 
 	return Result{
 		CtxSize:   int(ctx),

@@ -15,7 +15,7 @@ func TestCalcSingle_RealQwenModel(t *testing.T) {
 		t.Skip("no home dir")
 	}
 
-	modelPath := filepath.Join(home, "models/qwen3.6-27b/Qwen-Qwen3.6-27B-Q4_K_M.gguf")
+	modelPath := filepath.Join(home, "models/qwen3.6-27b-q4-k-m/Qwen-Qwen3.6-27B-Q4_K_M.gguf")
 	st, err := os.Stat(modelPath)
 	if err != nil {
 		t.Skipf("model not found: %v", err)
@@ -63,7 +63,7 @@ func TestCalcSingle_RealGemmaModel(t *testing.T) {
 		t.Skip("no home dir")
 	}
 
-	modelPath := filepath.Join(home, "models/gemma-4-26b-a4b-it/gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf")
+	modelPath := filepath.Join(home, "models/gemma-4-26b-a4b-it-q6-k/gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf")
 	st, err := os.Stat(modelPath)
 	if err != nil {
 		t.Skipf("model not found: %v", err)
