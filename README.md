@@ -196,7 +196,7 @@ Running `llamawizard` with no arguments walks through every step:
 Notes on commands whose behavior isn't obvious from the name alone:
 
 - **`stop`** unloads the service from launchd via `bootout`, not a plain `kill`. The LaunchAgent plist uses `KeepAlive` with `SuccessfulExit=false`, so a raw kill would just get the process restarted — `bootout` is the correct way to actually stop it.
-- **`doctor`** polls `http://127.0.0.1:<port>/v1/models` with exponential backoff (1s, 2s, 4s, 8s, 16s) and confirms every expected model ID is present. On failure it prints the last 20 lines of the llama-swap error log, and saves the result to `state.json`.
+- **`doctor`** polls `http://127.0.0.1:<port>/v1/models` with exponential backoff (first attempt immediate, then 2s, 4s, 8s, 16s) and confirms every expected model ID is present. On failure it prints the last 20 lines of the llama-swap error log, and saves the result to `state.json`.
 - **`models remove`** deletes the entry from `state.json`, regenerates the llama-swap config, and restarts the service — but leaves the model file untouched on disk. Use **`models delete`** if you also want the file gone.
 - **`uninstall`** is interactive and asks for confirmation before stopping the service, removing the LaunchAgent plist, and deleting `state.json`. Model files and the config directory are left in place for manual cleanup.
 - **`logs`** prints the last 30 lines of both `llama-swap.log` and `llama-swap-error.log`; use `tail -f` yourself for live following.

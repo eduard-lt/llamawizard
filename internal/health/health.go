@@ -1,7 +1,6 @@
 package health
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/eduard-lt/llamawizard/internal/logtail"
 )
 
 // Report is the result of a health check against the llama-swap API.
@@ -175,6 +176,9 @@ func errorLogPath() (string, error) {
 	return filepath.Join(home, ".local", "ai", "logs", "llama-swap-error.log"), nil
 }
 
+// enrichErrorLog records the path of the llama-swap error log and its last
+// 20 lines. Only a bounded window from the end of the file is read (see
+// logtail), so a large log does not inflate memory use.
 func (r *Report) enrichErrorLog() {
 	path, err := errorLogPath()
 	if err != nil {
@@ -183,23 +187,9 @@ func (r *Report) enrichErrorLog() {
 
 	r.ErrorLogPath = path
 
-	f, err := os.Open(path)
+	tail, err := logtail.Lines(path, 20)
 	if err != nil {
 		return
 	}
-	defer func() { _ = f.Close() }()
-
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-
-	n := len(lines)
-	start := 0
-	if n > 20 {
-		start = n - 20
-	}
-
-	r.ErrorLogTail = strings.Join(lines[start:], "\n")
+	r.ErrorLogTail = tail
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/eduard-lt/llamawizard/internal/health"
 	"github.com/eduard-lt/llamawizard/internal/launchd"
 	"github.com/eduard-lt/llamawizard/internal/llamaswap"
+	"github.com/eduard-lt/llamawizard/internal/logtail"
 	"github.com/eduard-lt/llamawizard/internal/pi"
 	"github.com/eduard-lt/llamawizard/internal/state"
 	"github.com/eduard-lt/llamawizard/internal/update"
@@ -625,20 +626,20 @@ func runPiUninstall() {
 	fmt.Println("pi uninstalled successfully.")
 }
 
+// printTail prints the last n lines of a log file. Only a bounded window
+// from the end of the file is read (see logtail), so a large log does not
+// inflate memory use.
 func printTail(path string, n int) {
-	data, err := os.ReadFile(path)
+	data, err := logtail.Lines(path, n)
 	if err != nil {
 		fmt.Println("  (no log file found)")
 		return
 	}
-
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	start := 0
-	if len(lines) > n {
-		start = len(lines) - n
+	if data == "" {
+		return
 	}
 
-	for _, line := range lines[start:] {
+	for _, line := range strings.Split(data, "\n") {
 		fmt.Println("  " + line)
 	}
 }
