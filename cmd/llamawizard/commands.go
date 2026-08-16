@@ -167,16 +167,21 @@ func runDoctor() {
 		_ = st.Save("")
 	} else {
 		fmt.Println("FAIL")
-		if r.Error != "" {
-			fmt.Printf("  Error: %s\n", r.Error)
-		}
-		if len(r.MissingModels) > 0 {
-			fmt.Printf("  Missing: %v\n", r.MissingModels)
-		}
-		if r.ErrorLogTail != "" {
-			fmt.Printf("\n  Error log tail (%s):\n", r.ErrorLogPath)
-			for _, line := range strings.Split(r.ErrorLogTail, "\n") {
-				fmt.Printf("    %s\n", line)
+		if len(modelIDs) == 0 && r.Error == "" {
+			fmt.Println("  No models installed — the service is responding, but there is nothing to verify.")
+			fmt.Println("  Install a model with 'llamawizard models add'.")
+		} else {
+			if r.Error != "" {
+				fmt.Printf("  Error: %s\n", r.Error)
+			}
+			if len(r.MissingModels) > 0 {
+				fmt.Printf("  Missing: %v\n", r.MissingModels)
+			}
+			if r.ErrorLogTail != "" {
+				fmt.Printf("\n  Error log tail (%s):\n", r.ErrorLogPath)
+				for _, line := range strings.Split(r.ErrorLogTail, "\n") {
+					fmt.Printf("    %s\n", line)
+				}
 			}
 		}
 		os.Exit(1)
