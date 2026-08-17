@@ -36,7 +36,7 @@ func Lines(path string, n int) (string, error) {
 	}
 
 	if info.Size() > maxWindow {
-		if _, err := f.Seek(info.Size() - maxWindow, io.SeekStart); err != nil {
+		if _, err := f.Seek(info.Size()-maxWindow, io.SeekStart); err != nil {
 			return "", err
 		}
 	}
