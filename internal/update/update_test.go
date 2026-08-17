@@ -33,12 +33,67 @@ func TestIsNewer(t *testing.T) {
 		{"dev", "", false},
 		{"v1.0", "v1.0.1", true},
 		{"v1.0.0", "v1.0", false},
+		// Two-digit patch ordering (real tags in this repo: v0.3.2, v0.3.10).
+		{"v0.3.2", "v0.3.10", true},
+		// Empty current parses as 0.0.0.
+		{"", "v0.0.1", true},
 	}
 
 	for _, tc := range tests {
 		got := IsNewer(tc.current, tc.latest)
 		if got != tc.want {
 			t.Errorf("IsNewer(%q, %q) = %v, want %v", tc.current, tc.latest, got, tc.want)
+		}
+	}
+}
+
+func TestIsNewerSuffixedVersions(t *testing.T) {
+	tests := []struct {
+		current string
+		latest  string
+		want    bool
+	}{
+		// git describe tails (Taskfile local builds): the patch part must
+		// keep its numeric prefix instead of zeroing out, so a local build
+		// made after a release is not offered that release as an update.
+		{"v0.1.3-9-g728e74c", "v0.1.3", false},
+		{"v0.1.3-dirty", "v0.1.3", false},
+		{"v0.1.3-9-g728e74c", "v0.1.4", true},
+		// Go pseudo-version build (go build of a dirty module), genuinely older.
+		{"v0.1.1-0.20260812140328-5e88d3d7c84d+dirty", "v0.1.3", true},
+		// Bare short hash (git describe --always with no tags): parses as 0.0.0.
+		{"abc1234", "v0.1.0", true},
+		// Pre-release suffixes compare as their base version (deliberate
+		// simplification; /releases/latest never serves pre-releases).
+		{"0.1.5-beta", "0.1.5", false},
+		{"0.2.0-rc1", "0.2.0", false},
+		// A pre-release of a higher version is still ahead of an older stable.
+		{"0.1.9", "0.2.0-rc1", true},
+		// A stable is not older than a pre-release of the same version.
+		{"0.2.0", "0.2.0-alpha", false},
+	}
+
+	for _, tc := range tests {
+		got := IsNewer(tc.current, tc.latest)
+		if got != tc.want {
+			t.Errorf("IsNewer(%q, %q) = %v, want %v", tc.current, tc.latest, got, tc.want)
+		}
+	}
+}
+
+func TestLeadingInt(t *testing.T) {
+	tests := map[string]int{
+		"0":            0,
+		"12":           12,
+		"3-9-g728e74c": 3,
+		"3-dirty":      3,
+		"0-rc1":        0,
+		"abc":          0,
+		"":             0,
+	}
+	for in, want := range tests {
+		if got := leadingInt(in); got != want {
+			t.Errorf("leadingInt(%q) = %d, want %d", in, got, want)
 		}
 	}
 }

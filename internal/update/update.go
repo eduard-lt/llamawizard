@@ -37,6 +37,18 @@ type Asset struct {
 	Size               int64  `json:"size"`
 }
 
+// IsNewer reports whether latest is newer than current.
+//
+// Versions are compared numerically over the first three dot-separated
+// parts. A trailing suffix on a part is ignored, so a suffixed version
+// compares equal to its base version: a local build made after v0.1.3
+// ("v0.1.3-9-g728e74c", "v0.1.3-dirty") is not offered v0.1.3 as an
+// update, and a pre-release tag ("0.2.0-rc1") is not treated as newer
+// than the release it previews. One deliberate deviation from semver:
+// a pre-release *current* compares equal to the matching stable release
+// instead of older (GitHub's /releases/latest never serves pre-releases
+// anyway, so the input is unreachable in practice). "dev" — unversioned
+// local builds — is always considered older than any release.
 func IsNewer(current, latest string) bool {
 	if current == "dev" {
 		return latest != ""
@@ -49,8 +61,8 @@ func IsNewer(current, latest string) bool {
 	bParts := padParts(strings.Split(b, "."))
 
 	for i := 0; i < 3; i++ {
-		an, _ := strconv.Atoi(aParts[i])
-		bn, _ := strconv.Atoi(bParts[i])
+		an := leadingInt(aParts[i])
+		bn := leadingInt(bParts[i])
 		if bn > an {
 			return true
 		}
@@ -59,6 +71,19 @@ func IsNewer(current, latest string) bool {
 		}
 	}
 	return false
+}
+
+// leadingInt parses the leading numeric run of a version part, ignoring any
+// suffix: "3" -> 3, "3-9-g728e74c" -> 3, "3-dirty" -> 3, "0-rc1" -> 0,
+// "abc" -> 0. This keeps git describe tails and pre-release tags from
+// zeroing out the part they attach to.
+func leadingInt(s string) int {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	n, _ := strconv.Atoi(s[:i])
+	return n
 }
 
 func padParts(parts []string) []string {
