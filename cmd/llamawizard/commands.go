@@ -302,8 +302,14 @@ func runUpdate() {
 	fmt.Print("\nUpdate now? [Y/n] ")
 
 	reader := bufio.NewReader(os.Stdin)
-	input, _ := reader.ReadString('\n')
+	input, readErr := reader.ReadString('\n')
 	input = strings.TrimSpace(strings.ToLower(input))
+	if readErr != nil {
+		// stdin closed before a line was read: nobody is there to answer
+		// the prompt, so do not assume consent to a self-update.
+		fmt.Println("No interactive input on stdin — update skipped.")
+		return
+	}
 
 	if input == "n" || input == "no" {
 		fmt.Println("Update cancelled.")
@@ -317,7 +323,7 @@ func runUpdate() {
 	}
 
 	fmt.Printf("\nSuccessfully updated to %s!\n", release.TagName)
-	fmt.Println("Run 'llamawizard restart' if the service was running.")
+	fmt.Println("The new version takes effect the next time llamawizard runs.")
 }
 
 func runModels(args []string) {

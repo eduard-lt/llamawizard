@@ -107,8 +107,15 @@ func checkForUpdates() {
 	fmt.Print("Update now? [Y/n] ")
 
 	reader := bufio.NewReader(os.Stdin)
-	input, _ := reader.ReadString('\n')
+	input, readErr := reader.ReadString('\n')
 	input = strings.TrimSpace(strings.ToLower(input))
+	if readErr != nil {
+		// stdin closed before a line was read: nobody is there to answer
+		// the prompt, so do not assume consent to a self-update.
+		fmt.Println()
+		fmt.Println("No interactive input on stdin — skipping update.")
+		return
+	}
 
 	if input == "n" || input == "no" {
 		fmt.Println()
