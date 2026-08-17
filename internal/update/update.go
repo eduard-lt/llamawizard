@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -198,13 +199,14 @@ func DownloadAndInstall(release *Release) error {
 	if err != nil {
 		return fmt.Errorf("downloading checksums: %w", err)
 	}
+	if csResp.StatusCode != http.StatusOK {
+		_ = csResp.Body.Close()
+		return fmt.Errorf("checksums download returned status %d", csResp.StatusCode)
+	}
 	csData, err := io.ReadAll(csResp.Body)
 	_ = csResp.Body.Close()
 	if err != nil {
 		return fmt.Errorf("reading checksums: %w", err)
-	}
-	if csResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("checksums download returned status %d", csResp.StatusCode)
 	}
 
 	expectedHash, err := parseChecksums(csData, assetName)
@@ -253,23 +255,64 @@ func DownloadAndInstall(release *Release) error {
 	}
 	defer func() { _ = os.Remove(binaryPath) }()
 
+	return installBinary(binaryPath, execPath)
+}
+
+// installBinary replaces the executable at execPath with the extracted
+// binary at binaryPath: the running executable is renamed to
+// execPath+".old", the new binary is renamed into its place, and the backup
+// is removed.
+//
+// Renaming (not deleting) a running executable is safe: the kernel keeps
+// the old inode mapped for the running process. On darwin os.Executable()
+// returns the launch-time path string, which is unaffected by the rename
+// and resolves to the new inode after the swap, so a re-exec of that path
+// picks up the update.
+//
+// On a failed install the old binary is restored from the backup. If the
+// restore itself fails, the backup is deliberately kept and its path
+// reported in the error: removing it would destroy the only remaining copy
+// of the old binary.
+//
+// installBinary does not remove binaryPath; the caller is responsible
+// (DownloadAndInstall defers it).
+func installBinary(binaryPath, execPath string) error {
 	if err := os.Chmod(binaryPath, 0o755); err != nil {
 		return fmt.Errorf("setting permissions: %w", err)
 	}
 
 	backupPath := execPath + ".old"
-	if err := os.Rename(execPath, backupPath); err != nil {
-		return fmt.Errorf("backing up old binary (try sudo?): %w", err)
+	if err := osRename(execPath, backupPath); err != nil {
+		return fmt.Errorf("backing up old binary: %w%s", err, renameHint(err))
 	}
 
-	if err := os.Rename(binaryPath, execPath); err != nil {
-		_ = os.Rename(backupPath, execPath)
-		_ = os.Remove(backupPath)
-		return fmt.Errorf("installing new binary (try sudo?): %w", err)
+	if err := osRename(binaryPath, execPath); err != nil {
+		restoreErr := osRename(backupPath, execPath)
+		if restoreErr == nil {
+			return fmt.Errorf("installing new binary: %w%s", err, renameHint(err))
+		}
+		return fmt.Errorf("installing new binary: %v; restoring the old binary also failed: %v; the old binary is kept at %s", err, restoreErr, backupPath)
 	}
 
 	_ = os.Remove(backupPath)
 	return nil
+}
+
+// osRename is an indirection over os.Rename so tests can simulate specific
+// renames failing.
+var osRename = os.Rename
+
+// renameHint appends advice for the failure classes that actually happen in
+// the self-update renames. "Try sudo" is only right for permission errors;
+// a cross-filesystem move (EXDEV) is not fixable with sudo.
+func renameHint(err error) string {
+	switch {
+	case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM):
+		return " — the binary's directory is not writable, try running with sudo"
+	case errors.Is(err, syscall.EXDEV):
+		return " — the temp directory and the binary's location are on different filesystems, self-update cannot move the binary across volumes, install manually from the GitHub release"
+	}
+	return ""
 }
 
 func extractBinary(tarballPath string) (string, error) {
