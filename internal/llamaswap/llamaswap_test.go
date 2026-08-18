@@ -5,13 +5,16 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -165,6 +168,181 @@ func TestExtractBinary(t *testing.T) {
 	}
 }
 
+// TestExtractBinary_TypeflagSpellings pins both spellings of the tar
+// regular-file flag. The flag is '0' (tar.TypeReg) in every real tarball —
+// bsdtar and GNU tar both write it, and the actual llama-swap release
+// tarballs carry it (verified against the v250 darwin_arm64 asset). Older
+// tooling writes the deprecated NUL spelling (tar.TypeRegA), which Go's tar
+// reader normalizes to TypeReg; extractBinary must accept both.
+//
+// The entries are built from raw ustar bytes because Go's tar.Writer
+// silently promotes TypeRegA to TypeReg, so it cannot produce the NUL
+// spelling.
+func TestExtractBinary_TypeflagSpellings(t *testing.T) {
+	const content = "SPELLING_TEST_BINARY"
+	for name, tf := range map[string]byte{
+		"classic '0'":  tar.TypeReg,
+		"NUL spelling": tar.TypeRegA, //nolint:staticcheck // SA1019 deliberate: TypeRegA is the NUL spelling this test exists to pin
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			tarballPath := filepath.Join(tmpDir, "test.tar.gz")
+
+			f, err := os.Create(tarballPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gz := gzip.NewWriter(f)
+			if _, err := gz.Write(rawUstarEntry("llama-swap", tf, []byte(content))); err != nil {
+				t.Fatal(err)
+			}
+			_ = gz.Close()
+			_ = f.Close()
+
+			binDir := filepath.Join(tmpDir, "bin")
+			binPath, err := extractBinary(tarballPath, binDir)
+			if err != nil {
+				t.Fatalf("extractBinary failed: %v", err)
+			}
+			data, err := os.ReadFile(binPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != content {
+				t.Errorf("content = %q, want %q", string(data), content)
+			}
+		})
+	}
+}
+
+// rawUstarEntry builds a minimal raw ustar archive (one regular-file entry,
+// padded data, two-block EOF marker) with the typeflag byte written
+// verbatim. Layout per POSIX ustar: 512-byte header, octal fields
+// zero-padded with a trailing NUL, checksum over the header with the
+// checksum field blanked to spaces.
+func rawUstarEntry(name string, typeflag byte, data []byte) []byte {
+	hdr := make([]byte, 512)
+	copy(hdr[0:100], name)
+	ustarOctal(hdr[100:107], 0o755)             // mode
+	ustarOctal(hdr[108:115], 0)                 // uid
+	ustarOctal(hdr[116:123], 0)                 // gid
+	ustarOctal(hdr[124:135], uint64(len(data))) // size
+	ustarOctal(hdr[136:147], 0)                 // mtime
+	for i := 148; i < 156; i++ {
+		hdr[i] = ' ' // checksum placeholder
+	}
+	hdr[156] = typeflag
+	copy(hdr[257:263], "ustar\x0000") // magic + version
+	var sum uint32
+	for _, b := range hdr {
+		sum += uint32(b)
+	}
+	ustarOctal(hdr[148:154], uint64(sum))
+	hdr[154] = 0
+	hdr[155] = ' '
+
+	out := append([]byte(nil), hdr...)
+	out = append(out, data...)
+	out = append(out, make([]byte, (512-len(data)%512)%512)...) // pad data to block
+	out = append(out, make([]byte, 1024)...)                    // two zero blocks: EOF
+	return out
+}
+
+// ustarOctal zero-pads v in octal across the whole field.
+func ustarOctal(dst []byte, v uint64) {
+	s := strconv.FormatUint(v, 8)
+	if len(s) > len(dst) {
+		panic("value too large for ustar octal field")
+	}
+	copy(dst[len(dst)-len(s):], s)
+}
+
+// TestExtractBinary_SkipsNonRegularEntries pins the safety property: only
+// regular file entries are ever copied. A symlink or directory named
+// "llama-swap" (e.g. a hostile tarball) must not be extracted — the
+// function must report "not found" and write nothing.
+func TestExtractBinary_SkipsNonRegularEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	tarballPath := filepath.Join(tmpDir, "test.tar.gz")
+
+	f, err := os.Create(tarballPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+
+	// Symlink with the binary's name, pointing outside the target dir.
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "llama-swap",
+		Linkname: "/etc/passwd",
+		Mode:     0o777,
+		Typeflag: tar.TypeSymlink,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Directory with the binary's name.
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "llama-swap/",
+		Mode:     0o755,
+		Typeflag: tar.TypeDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Hardlink with the binary's name.
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "llama-swap",
+		Linkname: "some-other-file",
+		Mode:     0o755,
+		Typeflag: tar.TypeLink,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = tw.Close()
+	_ = gz.Close()
+	_ = f.Close()
+
+	binDir := filepath.Join(tmpDir, "bin")
+	_, err = extractBinary(tarballPath, binDir)
+	if err == nil {
+		t.Fatal("extractBinary should fail when only non-regular entries match the name")
+	}
+	if _, statErr := os.Stat(filepath.Join(binDir, binaryName)); !os.IsNotExist(statErr) {
+		t.Errorf("no file should have been written, stat err = %v", statErr)
+	}
+}
+
+// TestExtractBinary_RealReleaseTarball runs extraction against a real
+// llama-swap release tarball when one is provided via
+// LLAMAWIZARD_TEST_REAL_TARBALL=/path/to/llama-swap_X_darwin_ARCH.tar.gz,
+// and verifies the extracted binary actually runs. Skipped otherwise — the
+// hermetic tests above pin the format properties; this one guards against
+// the upstream packaging changing in a way we did not anticipate.
+func TestExtractBinary_RealReleaseTarball(t *testing.T) {
+	tarballPath := os.Getenv("LLAMAWIZARD_TEST_REAL_TARBALL")
+	if tarballPath == "" {
+		t.Skip("set LLAMAWIZARD_TEST_REAL_TARBALL to run against a real release tarball")
+	}
+	if _, err := os.Stat(tarballPath); err != nil {
+		t.Skipf("tarball not available: %v", err)
+	}
+
+	binDir := t.TempDir()
+	binPath, err := extractBinary(tarballPath, binDir)
+	if err != nil {
+		t.Fatalf("extractBinary failed on real tarball: %v", err)
+	}
+	if info, err := os.Stat(binPath); err != nil || info.Size() < 1024*1024 {
+		t.Fatalf("extracted binary looks wrong: %v, size %d", err, info.Size())
+	}
+	out, err := exec.Command(binPath, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("extracted binary --version failed: %v (%s)", err, out)
+	}
+	t.Logf("real tarball extracted OK: %s (%s)", binPath, strings.TrimSpace(string(out)))
+}
+
 func TestExtractBinary_NoMatchingFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	tarballPath := filepath.Join(tmpDir, "test.tar.gz")
@@ -234,6 +412,51 @@ func TestDownloadTemp_SizeMismatch(t *testing.T) {
 	}
 }
 
+// TestDownloadTemp_ClosesBodyOnNon200 pins the error-path contract: when
+// downloadTemp fails, it must release the response body itself — the caller
+// returns on the error and never invokes the returned cleanup. The server
+// tracks its connection state and asserts the client's connection is closed,
+// which only happens when the client closes the unread body.
+func TestDownloadTemp_ClosesBodyOnNon200(t *testing.T) {
+	ls, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connClosed := make(chan struct{})
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("not found"))
+		}),
+	}
+	srv.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			select {
+			case <-connClosed:
+			default:
+				close(connClosed)
+			}
+		}
+	}
+	go func() { _ = srv.Serve(ls) }()
+	defer func() { _ = srv.Close() }()
+
+	_, _, err = downloadTemp("http://"+ls.Addr().String(), 0)
+	if err == nil {
+		t.Fatal("downloadTemp should fail on non-200 response")
+	}
+	// Note: the returned cleanup is deliberately NOT called — that mirrors
+	// the production caller (installFromReleases), which returns on error
+	// and never runs the cleanup. The function must not rely on the caller
+	// to release the response body.
+
+	select {
+	case <-connClosed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server connection still open: response body was not closed on the non-200 error path")
+	}
+}
+
 func TestDownloadTemp_HttpError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -261,7 +484,7 @@ func TestGenerateConfig_Basic(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatalf("GenerateConfig failed: %v", err)
 	}
@@ -324,7 +547,7 @@ func TestGenerateConfig_Mmproj(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "key123", "/usr/local/bin/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "key123", "/usr/local/bin/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +576,7 @@ func TestGenerateConfig_SamplingParams(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +604,7 @@ func TestGenerateConfig_NoSamplingParams(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +635,7 @@ func TestGenerateConfig_Aliases(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +659,7 @@ func TestGenerateConfig_MultipleModels(t *testing.T) {
 		{Slug: "model-c", Name: "Model C", Quant: "Q6", File: "c.gguf"},
 	}
 
-	data, err := GenerateConfig(models, 9000, "secret", "/srv/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "secret", "/srv/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,12 +672,42 @@ func TestGenerateConfig_MultipleModels(t *testing.T) {
 	}
 }
 
+func TestGenerateConfig_DuplicateSlug(t *testing.T) {
+	models := []state.ModelEntry{
+		{Slug: "model-a", Name: "Model A", Quant: "Q4_K_M", File: "a1.gguf"},
+		{Slug: "model-a", Name: "Model A (2)", Quant: "Q4_K_M", File: "a2.gguf"},
+	}
+
+	_, err := GenerateConfig(models, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
+	if err == nil {
+		t.Fatal("expected error for duplicate slug, got nil")
+	}
+	if !strings.Contains(err.Error(), "model-a") {
+		t.Errorf("error should name the colliding model ID, got: %v", err)
+	}
+}
+
+func TestGenerateConfig_DuplicateHFRepoFallback(t *testing.T) {
+	models := []state.ModelEntry{
+		{Slug: "", HFRepo: "org/repo", Quant: "Q4_K_M", File: "a.gguf"},
+		{Slug: "", HFRepo: "org/repo", Quant: "Q4_K_M", File: "b.gguf"},
+	}
+
+	_, err := GenerateConfig(models, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
+	if err == nil {
+		t.Fatal("expected error for duplicate HFRepo fallback key, got nil")
+	}
+	if !strings.Contains(err.Error(), "org/repo") {
+		t.Errorf("error should name the colliding model ID, got: %v", err)
+	}
+}
+
 func TestGenerateConfig_DefaultNameAndDescription(t *testing.T) {
 	models := []state.ModelEntry{
 		{Slug: "my-cool-model", Quant: "Q4_K_M", File: "model.gguf"},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +734,7 @@ func TestGenerateConfig_CustomDescription(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +750,7 @@ func TestGenerateConfig_EmptyApiKey(t *testing.T) {
 		{Slug: "m", Name: "M", Quant: "Q4", File: "m.gguf"},
 	}
 
-	data, err := GenerateConfig(models, 8080, "", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +766,7 @@ func TestGenerateConfig_ModelPath(t *testing.T) {
 		{Slug: "test-slug", Name: "Test", Quant: "Q4", File: "test.gguf"},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,7 +817,7 @@ func TestGenerateConfig_MatchesUserConfigStructure(t *testing.T) {
 		},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "/Users/eduard/dev/llama.cpp/build/bin/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/Users/eduard/dev/llama.cpp/build/bin/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -847,7 +1100,7 @@ func TestGenerateConfig_EmptyPathResolves(t *testing.T) {
 		{Slug: "test", Name: "Test", Quant: "Q4", File: "test.gguf"},
 	}
 
-	data, err := GenerateConfig(models, 8080, "dummy", "", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatalf("GenerateConfig with empty path failed: %v", err)
 	}
@@ -872,7 +1125,7 @@ func TestGenerateConfig_EmptyPath_NoBinary(t *testing.T) {
 		{Slug: "test", Name: "Test", Quant: "Q4", File: "test.gguf"},
 	}
 
-	_, err := GenerateConfig(models, 8080, "dummy", "", hardware.HardwareInfo{})
+	_, err := GenerateConfig(models, "dummy", "", hardware.HardwareInfo{})
 	if err == nil {
 		t.Fatal("GenerateConfig with empty path and no binary should return an error")
 	}
@@ -887,7 +1140,7 @@ func TestValidateConfigYAML_Valid(t *testing.T) {
 	models := []state.ModelEntry{
 		{Slug: "test", Name: "Test", Quant: "Q4", File: "test.gguf"},
 	}
-	data, err := GenerateConfig(models, 8080, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -911,7 +1164,7 @@ func TestValidateConfigYAML_SpacesOnly(t *testing.T) {
 	models := []state.ModelEntry{
 		{Slug: "test", Name: "Test", Quant: "Q4", File: "test.gguf"},
 	}
-	data, err := GenerateConfig(models, 8080, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -963,7 +1216,7 @@ func TestGenerateConfig_IndentationConsistency(t *testing.T) {
 		{Slug: "a", Name: "A", Quant: "Q4", File: "a.gguf"},
 		{Slug: "b", Name: "B", Quant: "Q4", File: "b.gguf"},
 	}
-	data, err := GenerateConfig(models, 8080, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
+	data, err := GenerateConfig(models, "dummy", "/opt/homebrew/bin/llama-server", hardware.HardwareInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1026,6 +1279,68 @@ func TestWriteConfig_ForceWrite_ValidatesAfterMkdir(t *testing.T) {
 	_, err := os.Stat(filepath.Dir(path))
 	if !os.IsNotExist(err) {
 		t.Error("parent directories should not be created for invalid content")
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"/a/b.gguf", "'/a/b.gguf'"},
+		{"/a/my model.gguf", "'/a/my model.gguf'"},
+		{"/a/model (1).gguf", "'/a/model (1).gguf'"},
+		{`/a/it's.gguf`, "'/a/it'\\''s.gguf'"},
+		{"", "''"},
+	}
+	for _, tt := range tests {
+		if got := shellQuote(tt.in); got != tt.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestGenerateConfig_PathWithSpacesAndParens(t *testing.T) {
+	models := []state.ModelEntry{
+		{Slug: "test-slug", Name: "Test", Quant: "Q4", File: "my model (1).gguf"},
+	}
+
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	yamlStr := string(data)
+	home, _ := os.UserHomeDir()
+	want := fmt.Sprintf("--model '%s'", filepath.Join(home, "models", "test-slug", "my model (1).gguf"))
+	if !strings.Contains(yamlStr, want) {
+		t.Errorf("model path should be single-quoted as %q, got:\n%s", want, yamlStr)
+	}
+	if err := ValidateConfigYAML(data); err != nil {
+		t.Errorf("generated config should validate: %v", err)
+	}
+}
+
+func TestGenerateConfig_PathWithSingleQuote(t *testing.T) {
+	models := []state.ModelEntry{
+		{Slug: "test-slug", Name: "Test", Quant: "Q4", File: "it's.gguf"},
+	}
+
+	data, err := GenerateConfig(models, "dummy", "/path/to/llama-server", hardware.HardwareInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	yamlStr := string(data)
+	home, _ := os.UserHomeDir()
+	// A literal single quote must be escaped as '\'' inside the surrounding
+	// single quotes so shlex re-joins it into the original character.
+	want := fmt.Sprintf("--model '%s'", strings.ReplaceAll(filepath.Join(home, "models", "test-slug", "it's.gguf"), "'", `'\''`))
+	if !strings.Contains(yamlStr, want) {
+		t.Errorf("model path should escape the quote as %q, got:\n%s", want, yamlStr)
+	}
+	if err := ValidateConfigYAML(data); err != nil {
+		t.Errorf("generated config should validate: %v", err)
 	}
 }
 

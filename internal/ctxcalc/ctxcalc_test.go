@@ -244,3 +244,57 @@ func TestCalcSingle_ClampsToMin(t *testing.T) {
 		t.Errorf("CtxSize %d below MinCtxSize %d", r.CtxSize, MinCtxSize)
 	}
 }
+
+func TestCalcSingle_ModelLargerThanUsableRAM(t *testing.T) {
+	hw := hardware.HardwareInfo{
+		RAM: 16 * 1024 * 1024 * 1024, // 16 GB -> usable = 8 GiB
+	}
+
+	calc := New(hw)
+	modelPath := makeTestGGUF(t)
+
+	// A 12 GiB model on a 16 GB machine: the model alone exceeds the usable
+	// budget, so nothing may be budgeted for the KV cache. Before the fix,
+	// the fallback treated the entire usable RAM as available for KV and
+	// emitted a context that cannot possibly fit alongside the model.
+	r := calc.CalcSingle(modelPath, 12*1024*1024*1024, true)
+
+	if r.UsedDefault {
+		t.Fatal("should not use default; GGUF metadata is valid")
+	}
+	if r.MaxByRAM != 0 {
+		t.Errorf("MaxByRAM = %d, want 0 (model exceeds usable RAM)", r.MaxByRAM)
+	}
+	if r.CtxSize != MinCtxSize {
+		t.Errorf("CtxSize = %d, want MinCtxSize %d", r.CtxSize, MinCtxSize)
+	}
+}
+
+func TestCalcSingle_UnknownSizeFallsBackToStat(t *testing.T) {
+	hw := hardware.HardwareInfo{
+		RAM: 48 * 1024 * 1024 * 1024, // 48 GB
+	}
+
+	calc := New(hw)
+	modelPath := makeTestGGUF(t)
+
+	st, err := os.Stat(modelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When the caller doesn't know the file size (e.g. --link with a failed
+	// HEAD request), the calculator must stat the file instead of assuming
+	// the model takes no RAM at all.
+	rUnknown := calc.CalcSingle(modelPath, 0, true)
+	rKnown := calc.CalcSingle(modelPath, st.Size(), true)
+
+	if rUnknown.CtxSize != rKnown.CtxSize {
+		t.Errorf("unknown-size CtxSize = %d, want %d (same as stat'd size)",
+			rUnknown.CtxSize, rKnown.CtxSize)
+	}
+	if rUnknown.MaxByRAM != rKnown.MaxByRAM {
+		t.Errorf("unknown-size MaxByRAM = %d, want %d",
+			rUnknown.MaxByRAM, rKnown.MaxByRAM)
+	}
+}

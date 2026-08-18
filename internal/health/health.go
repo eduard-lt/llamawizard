@@ -1,7 +1,6 @@
 package health
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/eduard-lt/llamawizard/internal/logtail"
 )
 
 // Report is the result of a health check against the llama-swap API.
@@ -34,7 +35,8 @@ type v1ModelsResponse struct {
 // Check polls the llama-swap /v1/models endpoint with exponential backoff
 // and verifies that every expected model id is present.
 //
-// Backoff schedule: 1s, 2s, 4s, 8s, 16s (caps at ~31s total, max 5 attempts).
+// The first attempt is immediate; retryable failures are retried after
+// 2s, 4s, 8s, 16s (max 5 attempts, ~30s total wait).
 // On failure the report includes the last 20 lines of the error log at
 // ~/.local/ai/logs/llama-swap-error.log.
 func Check(port int, expectedModels []string) (Report, error) {
@@ -45,7 +47,14 @@ func Check(port int, expectedModels []string) (Report, error) {
 func CheckWithKey(port int, expectedModels []string, apiKey string) (Report, error) {
 	start := time.Now()
 
-	backoffs := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+	// Wait before each attempt; 0 means the first attempt is immediate.
+	waits := []time.Duration{
+		0,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		16 * time.Second,
+	}
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/models", port)
 
@@ -53,19 +62,15 @@ func CheckWithKey(port int, expectedModels []string, apiKey string) (Report, err
 	var resp *v1ModelsResponse
 	attempt := 0
 
-	for i, backoff := range backoffs {
+	for i, wait := range waits {
 		attempt = i + 1
 
-		if i > 0 {
-			time.Sleep(backoff)
+		if wait > 0 {
+			time.Sleep(wait)
 		}
 
 		resp, lastErr = fetchModels(url, apiKey)
-		if lastErr == nil {
-			break
-		}
-
-		if !isRetryable(lastErr) {
+		if lastErr == nil || !isRetryable(lastErr) {
 			break
 		}
 	}
@@ -171,6 +176,9 @@ func errorLogPath() (string, error) {
 	return filepath.Join(home, ".local", "ai", "logs", "llama-swap-error.log"), nil
 }
 
+// enrichErrorLog records the path of the llama-swap error log and its last
+// 20 lines. Only a bounded window from the end of the file is read (see
+// logtail), so a large log does not inflate memory use.
 func (r *Report) enrichErrorLog() {
 	path, err := errorLogPath()
 	if err != nil {
@@ -179,23 +187,9 @@ func (r *Report) enrichErrorLog() {
 
 	r.ErrorLogPath = path
 
-	f, err := os.Open(path)
+	tail, err := logtail.Lines(path, 20)
 	if err != nil {
 		return
 	}
-	defer func() { _ = f.Close() }()
-
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-
-	n := len(lines)
-	start := 0
-	if n > 20 {
-		start = n - 20
-	}
-
-	r.ErrorLogTail = strings.Join(lines[start:], "\n")
+	r.ErrorLogTail = tail
 }

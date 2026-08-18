@@ -17,6 +17,7 @@ import (
 	"github.com/eduard-lt/llamawizard/internal/health"
 	"github.com/eduard-lt/llamawizard/internal/launchd"
 	"github.com/eduard-lt/llamawizard/internal/llamaswap"
+	"github.com/eduard-lt/llamawizard/internal/logtail"
 	"github.com/eduard-lt/llamawizard/internal/pi"
 	"github.com/eduard-lt/llamawizard/internal/state"
 	"github.com/eduard-lt/llamawizard/internal/update"
@@ -166,16 +167,21 @@ func runDoctor() {
 		_ = st.Save("")
 	} else {
 		fmt.Println("FAIL")
-		if r.Error != "" {
-			fmt.Printf("  Error: %s\n", r.Error)
-		}
-		if len(r.MissingModels) > 0 {
-			fmt.Printf("  Missing: %v\n", r.MissingModels)
-		}
-		if r.ErrorLogTail != "" {
-			fmt.Printf("\n  Error log tail (%s):\n", r.ErrorLogPath)
-			for _, line := range strings.Split(r.ErrorLogTail, "\n") {
-				fmt.Printf("    %s\n", line)
+		if len(modelIDs) == 0 && r.Error == "" {
+			fmt.Println("  No models installed — the service is responding, but there is nothing to verify.")
+			fmt.Println("  Install a model with 'llamawizard models add'.")
+		} else {
+			if r.Error != "" {
+				fmt.Printf("  Error: %s\n", r.Error)
+			}
+			if len(r.MissingModels) > 0 {
+				fmt.Printf("  Missing: %v\n", r.MissingModels)
+			}
+			if r.ErrorLogTail != "" {
+				fmt.Printf("\n  Error log tail (%s):\n", r.ErrorLogPath)
+				for _, line := range strings.Split(r.ErrorLogTail, "\n") {
+					fmt.Printf("    %s\n", line)
+				}
 			}
 		}
 		os.Exit(1)
@@ -296,8 +302,14 @@ func runUpdate() {
 	fmt.Print("\nUpdate now? [Y/n] ")
 
 	reader := bufio.NewReader(os.Stdin)
-	input, _ := reader.ReadString('\n')
+	input, readErr := reader.ReadString('\n')
 	input = strings.TrimSpace(strings.ToLower(input))
+	if readErr != nil {
+		// stdin closed before a line was read: nobody is there to answer
+		// the prompt, so do not assume consent to a self-update.
+		fmt.Println("No interactive input on stdin — update skipped.")
+		return
+	}
 
 	if input == "n" || input == "no" {
 		fmt.Println("Update cancelled.")
@@ -311,7 +323,7 @@ func runUpdate() {
 	}
 
 	fmt.Printf("\nSuccessfully updated to %s!\n", release.TagName)
-	fmt.Println("Run 'llamawizard restart' if the service was running.")
+	fmt.Println("The new version takes effect the next time llamawizard runs.")
 }
 
 func runModels(args []string) {
@@ -432,6 +444,21 @@ func runModelsAdd(args []string) {
 	}
 }
 
+// removeModelsByName splits st.Models into the entries that do not match
+// slug and a count of the ones that do. Every matching entry is removed, so
+// a state corrupted with duplicate slugs is cleaned up in a single call.
+func removeModelsByName(st *state.State, slug string) (kept []state.ModelEntry, removed int) {
+	kept = make([]state.ModelEntry, 0, len(st.Models))
+	for _, m := range st.Models {
+		if m.Slug == slug {
+			removed++
+			continue
+		}
+		kept = append(kept, m)
+	}
+	return kept, removed
+}
+
 func runModelsRemove(name string) {
 	st, err := state.Load("")
 	if err != nil {
@@ -439,27 +466,23 @@ func runModelsRemove(name string) {
 		os.Exit(1)
 	}
 
-	idx := -1
-	for i, m := range st.Models {
-		if m.Slug == name {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
+	kept, removed := removeModelsByName(st, name)
+	if removed == 0 {
 		fmt.Printf("Model '%s' not found.\n", name)
 		os.Exit(1)
 	}
-
-	removed := st.Models[idx]
-	st.Models = append(st.Models[:idx], st.Models[idx+1:]...)
+	st.Models = kept
 
 	if err := st.Save(""); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving state: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Removed %s from config.\n", removed.Slug)
+	if removed > 1 {
+		fmt.Printf("Removed %d duplicate entries for %s from config.\n", removed, name)
+	} else {
+		fmt.Printf("Removed %s from config.\n", name)
+	}
 	fmt.Println("The model file was NOT deleted. Use 'models delete' to also remove the file.")
 
 	regenerateConfig(st)
@@ -472,19 +495,11 @@ func runModelsDelete(name string, skipConfirm bool) {
 		os.Exit(1)
 	}
 
-	idx := -1
-	for i, m := range st.Models {
-		if m.Slug == name {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
+	kept, removed := removeModelsByName(st, name)
+	if removed == 0 {
 		fmt.Printf("Model '%s' not found.\n", name)
 		os.Exit(1)
 	}
-
-	removed := st.Models[idx]
 
 	if !skipConfirm {
 		fmt.Printf("This will remove '%s' from config AND delete its files.\n", name)
@@ -499,27 +514,31 @@ func runModelsDelete(name string, skipConfirm bool) {
 	}
 
 	home, _ := os.UserHomeDir()
-	modelDir := filepath.Join(home, "models", removed.Slug)
+	modelDir := filepath.Join(home, "models", name)
 	if err := os.RemoveAll(modelDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not delete model files: %v\n", err)
 	} else {
 		fmt.Printf("Deleted %s\n", modelDir)
 	}
 
-	st.Models = append(st.Models[:idx], st.Models[idx+1:]...)
+	st.Models = kept
 	if err := st.Save(""); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving state: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Removed %s from config and disk.\n", removed.Slug)
+	if removed > 1 {
+		fmt.Printf("Removed %d duplicate entries for %s from config and disk.\n", removed, name)
+	} else {
+		fmt.Printf("Removed %s from config and disk.\n", name)
+	}
 
 	regenerateConfig(st)
 }
 
 func regenerateConfig(st *state.State) {
 	hw, _ := hardware.Detect()
-	yamlBytes, err := llamaswap.GenerateConfig(st.Models, st.Port, st.APIKey, st.LlamaCppPath, hw)
+	yamlBytes, err := llamaswap.GenerateConfig(st.Models, st.APIKey, st.LlamaCppPath, hw)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating config: %v\n", err)
 		return
@@ -625,20 +644,20 @@ func runPiUninstall() {
 	fmt.Println("pi uninstalled successfully.")
 }
 
+// printTail prints the last n lines of a log file. Only a bounded window
+// from the end of the file is read (see logtail), so a large log does not
+// inflate memory use.
 func printTail(path string, n int) {
-	data, err := os.ReadFile(path)
+	data, err := logtail.Lines(path, n)
 	if err != nil {
 		fmt.Println("  (no log file found)")
 		return
 	}
-
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	start := 0
-	if len(lines) > n {
-		start = len(lines) - n
+	if data == "" {
+		return
 	}
 
-	for _, line := range lines[start:] {
+	for _, line := range strings.Split(data, "\n") {
 		fmt.Println("  " + line)
 	}
 }

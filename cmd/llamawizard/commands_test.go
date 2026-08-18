@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/eduard-lt/llamawizard/internal/state"
 )
 
 // The regression: `models add --link https://huggingface.co/unsloth/Qwen3.8-27B-GGUF`
@@ -145,6 +147,39 @@ func TestNormalizeSlug(t *testing.T) {
 	}
 	if got := normalizeSlug("foo", ""); got != "foo" {
 		t.Errorf("normalizeSlug(foo, empty) = %q, want foo", got)
+	}
+}
+
+// The guard registerModel relies on: re-adding an installed slug must be
+// caught before the entry is saved, not by GenerateConfig after the fact.
+func TestSlugExists(t *testing.T) {
+	st := &state.State{
+		Models: []state.ModelEntry{{Slug: "qwen3.6-27b"}, {Slug: "gemma-4-26b-a4b-it"}},
+	}
+	if !slugExists(st, "gemma-4-26b-a4b-it") {
+		t.Error("expected gemma-4-26b-a4b-it to exist")
+	}
+	if slugExists(st, "nope") {
+		t.Error("did not expect nope to exist")
+	}
+	if slugExists(&state.State{}, "x") {
+		t.Error("empty state should have no slugs")
+	}
+}
+
+// Recovery from an already-corrupted state must take a single remove call,
+// not one per duplicate entry.
+func TestRemoveModelsByName_RemovesAllDuplicates(t *testing.T) {
+	st := &state.State{Models: []state.ModelEntry{{Slug: "a"}, {Slug: "b"}, {Slug: "a"}}}
+	kept, removed := removeModelsByName(st, "a")
+	if removed != 2 {
+		t.Fatalf("removed = %d, want 2", removed)
+	}
+	if len(kept) != 1 || kept[0].Slug != "b" {
+		t.Fatalf("kept = %+v, want [b]", kept)
+	}
+	if _, removed = removeModelsByName(st, "zz"); removed != 0 {
+		t.Fatalf("removed = %d, want 0", removed)
 	}
 }
 

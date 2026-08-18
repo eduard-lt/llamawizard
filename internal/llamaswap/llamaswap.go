@@ -238,6 +238,11 @@ func findAsset(pattern string) (*releaseAsset, error) {
 }
 
 // downloadTemp fetches the URL into a temp file and returns its path plus a cleanup func.
+//
+// On error, downloadTemp has already released everything it allocated
+// (response body, temp file); the returned cleanup is a no-op, safe to
+// ignore or call. On success, the caller owns the temp file and must call
+// cleanup (e.g. via defer) to remove it.
 func downloadTemp(url string, expectedSize int64) (path string, cleanup func(), err error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -253,25 +258,22 @@ func downloadTemp(url string, expectedSize int64) (path string, cleanup func(), 
 	if err != nil {
 		return "", func() {}, fmt.Errorf("HTTP GET %s: %w", url, err)
 	}
-
-	cleanup = func() {
-		_ = resp.Body.Close()
-		_ = os.Remove(path)
-	}
+	// Close the body on every path: callers discard the returned cleanup on
+	// error, so the function itself must release the response.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", cleanup, fmt.Errorf("download returned status %d", resp.StatusCode)
+		return "", func() {}, fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
 	f, err := os.CreateTemp("", "llama-swap-*.tar.gz")
 	if err != nil {
-		return "", cleanup, fmt.Errorf("creating temp file: %w", err)
+		return "", func() {}, fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpPath := f.Name()
 
 	n, err := io.Copy(f, resp.Body)
 	_ = f.Close()
-	_ = resp.Body.Close()
 	if err != nil {
 		_ = os.Remove(tmpPath)
 		return "", func() {}, fmt.Errorf("writing download: %w", err)
@@ -282,8 +284,7 @@ func downloadTemp(url string, expectedSize int64) (path string, cleanup func(), 
 		return "", func() {}, fmt.Errorf("size mismatch: expected %d, got %d", expectedSize, n)
 	}
 
-	cleanup = func() { _ = os.Remove(tmpPath) }
-	return tmpPath, cleanup, nil
+	return tmpPath, func() { _ = os.Remove(tmpPath) }, nil
 }
 
 // extractBinary unpacks the tarball and places the llama-swap binary into binDir.
@@ -381,21 +382,36 @@ type config struct {
 //	    description: "..."
 //	    cmd: |
 //	      /path/to/llama-server
-//	      --host 127.0.0.1 --port ${PORT}
-//	      --model ~/models/my-model/model.gguf
+//	      --host
+//	      127.0.0.1
+//	      --port
+//	      ${PORT}
+//	      --model '/Users/x/models/my-model/model.gguf'
 //	      -ngl 999
 //	      --ctx-size 32768
 //	      --jinja
 //	    aliases:
 //	      - alias-one
 //
-// Model file paths are derived as ~/models/<slug>/<file>.gguf.
+// The proxy listen port is not part of this config: it is passed to
+// launchd.WritePlist as the -listen flag. ${PORT} is a per-model runtime
+// macro that llama-swap allocates from its own startPort range (default
+// 5800) — it is not the proxy port.
+//
+// Model file paths are absolute (~/models/<slug>/<file> expanded) and
+// single-quoted: llama-swap does not run a shell, it tokenizes cmd with
+// POSIX shlex, so the quotes are the only thing protecting spaces, parens
+// and quotes in paths.
 // If a model entry has Mmproj set, --mmproj is included in the cmd.
 // Sampling params (Temperature, TopK, TopP, RepeatPenalty) are only
 // emitted when non-zero. CtxSize defaults to a hardware-aware smart
 // calculation when zero — falling back to 32768 if GGUF metadata or
 // RAM detection is unavailable.
-func GenerateConfig(models []state.ModelEntry, port int, apiKey string, llamaServerPath string, hw hardware.HardwareInfo) ([]byte, error) {
+//
+// Two entries mapping to the same model ID (same slug, or the same
+// HFRepo when the slug is empty) are rejected with an error: the models
+// map is keyed by that ID, so a duplicate would silently drop one model.
+func GenerateConfig(models []state.ModelEntry, apiKey string, llamaServerPath string, hw hardware.HardwareInfo) ([]byte, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("getting home directory: %w", err)
@@ -419,11 +435,22 @@ func GenerateConfig(models []state.ModelEntry, port int, apiKey string, llamaSer
 		cfg.ApiKeys = &[]string{apiKey}
 	}
 
-	for _, m := range models {
+	// seen maps each config key to the index of the first entry that uses
+	// it. The YAML models map is keyed by this ID, so a second entry with
+	// the same key would silently overwrite the first — reject instead.
+	seen := make(map[string]int, len(models))
+
+	for i, m := range models {
 		modelID := m.Slug
 		if modelID == "" {
 			modelID = m.HFRepo
 		}
+
+		if first, dup := seen[modelID]; dup {
+			return nil, fmt.Errorf("models[%d] and models[%d] share the llama-swap model ID %q (slugs %q and %q): the later entry would be silently dropped from the config — remove or rename one of them",
+				first, i, modelID, models[first].Slug, m.Slug)
+		}
+		seen[modelID] = i
 
 		name := m.Name
 		if name == "" {
@@ -435,9 +462,10 @@ func GenerateConfig(models []state.ModelEntry, port int, apiKey string, llamaSer
 			desc = fmt.Sprintf("%s %s", m.Quant, name)
 		}
 
+		modelPath := filepath.Join(home, "models", m.Slug, m.File)
+
 		ctxSize := m.CtxSize
 		if ctxSize == 0 {
-			modelPath := filepath.Join(home, "models", m.Slug, m.File)
 			r := calc.CalcSingle(modelPath, m.SizeBytes, true)
 			if !r.UsedDefault {
 				ctxSize = r.CtxSize
@@ -445,18 +473,17 @@ func GenerateConfig(models []state.ModelEntry, port int, apiKey string, llamaSer
 				ctxSize = ctxcalc.DefaultCtxSize
 			}
 		}
-		modelPath := filepath.Join(home, "models", m.Slug, m.File)
 
 		var args []string
 		args = append(args,
-			llamaServerPath,
+			shellQuote(llamaServerPath),
 			"--host", "127.0.0.1",
 			"--port", "${PORT}",
-			fmt.Sprintf("--model %s", modelPath),
+			fmt.Sprintf("--model %s", shellQuote(modelPath)),
 		)
 		if m.Mmproj != "" {
 			mmprojPath := filepath.Join(home, "models", m.Slug, m.Mmproj)
-			args = append(args, fmt.Sprintf("--mmproj %s", mmprojPath))
+			args = append(args, fmt.Sprintf("--mmproj %s", shellQuote(mmprojPath)))
 		}
 		args = append(args,
 			"-ngl 999",
@@ -496,6 +523,18 @@ func GenerateConfig(models []state.ModelEntry, port int, apiKey string, llamaSer
 	return yamlBytes, nil
 }
 
+// shellQuote wraps s in single quotes so llama-swap's shlex-based cmd
+// tokenizer keeps it as a single argument. llama-swap does not run a
+// shell: it splits cmd with POSIX shlex, so an unquoted space or
+// parenthesis would split the path into multiple arguments, and an
+// unquoted quote character would be stripped silently. A literal single
+// quote is escaped the standard shell way — close the quote, emit a
+// backslash-escaped quote, reopen the quote — which shlex re-joins into
+// the original character.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // titleCase capitalizes the first letter of each word.
 func titleCase(s string) string {
 	return strings.TrimSpace(func(r []rune) string {
@@ -516,9 +555,10 @@ func titleCase(s string) string {
 // or its content differs.
 //
 // If the file exists and is identical, returns changed=false immediately.
-// If the file exists and differs, returns changed=false along with a unified
-// diff string — it does NOT overwrite. The caller (wizard) should present
-// the diff to the user and call ForceWrite if they confirm.
+// If the file exists and differs, returns changed=false along with a
+// line-by-line diff (unified-style +/- prefixes, no hunk headers — it is for
+// display, not for patching) — it does NOT overwrite. The caller (wizard)
+// should present the diff to the user and call ForceWrite if they confirm.
 //
 // On first run (file doesn't exist), writes cleanly and returns changed=true.
 func WriteConfig(path string, newContent []byte) (changed bool, diff string, err error) {
@@ -608,7 +648,9 @@ func ValidateConfigYAML(data []byte) error {
 	return nil
 }
 
-// computeDiff produces a unified diff between old and new content.
+// computeDiff produces a unified-style, line-by-line diff between old and new
+// content: a ---/+++ header followed by each line prefixed with ' ', '+' or
+// '-'. No hunk headers or line numbers — the wizard renders it as-is.
 func computeDiff(filename string, old, new []byte) string {
 	linesOld := splitLines(old)
 	linesNew := splitLines(new)

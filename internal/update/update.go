@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -37,6 +38,18 @@ type Asset struct {
 	Size               int64  `json:"size"`
 }
 
+// IsNewer reports whether latest is newer than current.
+//
+// Versions are compared numerically over the first three dot-separated
+// parts. A trailing suffix on a part is ignored, so a suffixed version
+// compares equal to its base version: a local build made after v0.1.3
+// ("v0.1.3-9-g728e74c", "v0.1.3-dirty") is not offered v0.1.3 as an
+// update. A pre-release therefore compares equal to the matching stable
+// release in either direction: in the *current* direction that is a
+// deliberate deviation from semver (such a build is not offered the
+// release it previews), and in the *latest* direction it is unreachable
+// anyway (GitHub's /releases/latest never serves pre-releases). "dev" —
+// unversioned local builds — is always considered older than any release.
 func IsNewer(current, latest string) bool {
 	if current == "dev" {
 		return latest != ""
@@ -49,8 +62,8 @@ func IsNewer(current, latest string) bool {
 	bParts := padParts(strings.Split(b, "."))
 
 	for i := 0; i < 3; i++ {
-		an, _ := strconv.Atoi(aParts[i])
-		bn, _ := strconv.Atoi(bParts[i])
+		an := leadingInt(aParts[i])
+		bn := leadingInt(bParts[i])
 		if bn > an {
 			return true
 		}
@@ -59,6 +72,19 @@ func IsNewer(current, latest string) bool {
 		}
 	}
 	return false
+}
+
+// leadingInt parses the leading numeric run of a version part, ignoring any
+// suffix: "3" -> 3, "3-9-g728e74c" -> 3, "3-dirty" -> 3, "0-rc1" -> 0,
+// "abc" -> 0. This keeps git describe tails and pre-release tags from
+// zeroing out the part they attach to.
+func leadingInt(s string) int {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	n, _ := strconv.Atoi(s[:i])
+	return n
 }
 
 func padParts(parts []string) []string {
@@ -78,6 +104,9 @@ func CheckLatest() (*Release, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", "llamawizard")
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -90,7 +119,7 @@ func CheckLatest() (*Release, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
+		return nil, ghAPIError(resp, body)
 	}
 
 	var release Release
@@ -103,6 +132,38 @@ func CheckLatest() (*Release, error) {
 	}
 
 	return &release, nil
+}
+
+// ghAPIError turns a non-200 GitHub API response into an actionable error.
+// Rate limits are transient: they get the reset time and, when the call was
+// unauthenticated, a pointer at GITHUB_TOKEN — instead of a raw dump of
+// GitHub's JSON.
+func ghAPIError(resp *http.Response, body []byte) error {
+	if !isRateLimited(resp, body) {
+		return fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
+	}
+	msg := "GitHub API rate limit exceeded"
+	if reset := resp.Header.Get("X-RateLimit-Reset"); reset != "" {
+		if ts, err := strconv.ParseInt(reset, 10, 64); err == nil {
+			if in := time.Until(time.Unix(ts, 0)).Round(time.Minute); in > 0 {
+				msg += fmt.Sprintf(", resets in about %s", in)
+			}
+		}
+	}
+	if os.Getenv("GITHUB_TOKEN") == "" {
+		msg += "; set GITHUB_TOKEN to raise the limit from 60 to 5000 requests/hour"
+	}
+	return errors.New(msg)
+}
+
+func isRateLimited(resp *http.Response, body []byte) bool {
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
+		return false
+	}
+	if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(string(body)), "rate limit")
 }
 
 func findAsset(release *Release) (name string, url string, err error) {
@@ -173,13 +234,14 @@ func DownloadAndInstall(release *Release) error {
 	if err != nil {
 		return fmt.Errorf("downloading checksums: %w", err)
 	}
+	if csResp.StatusCode != http.StatusOK {
+		_ = csResp.Body.Close()
+		return fmt.Errorf("checksums download returned status %d", csResp.StatusCode)
+	}
 	csData, err := io.ReadAll(csResp.Body)
 	_ = csResp.Body.Close()
 	if err != nil {
 		return fmt.Errorf("reading checksums: %w", err)
-	}
-	if csResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("checksums download returned status %d", csResp.StatusCode)
 	}
 
 	expectedHash, err := parseChecksums(csData, assetName)
@@ -228,23 +290,64 @@ func DownloadAndInstall(release *Release) error {
 	}
 	defer func() { _ = os.Remove(binaryPath) }()
 
+	return installBinary(binaryPath, execPath)
+}
+
+// installBinary replaces the executable at execPath with the extracted
+// binary at binaryPath: the running executable is renamed to
+// execPath+".old", the new binary is renamed into its place, and the backup
+// is removed.
+//
+// Renaming (not deleting) a running executable is safe: the kernel keeps
+// the old inode mapped for the running process. On darwin os.Executable()
+// returns the launch-time path string, which is unaffected by the rename
+// and resolves to the new inode after the swap, so a re-exec of that path
+// picks up the update.
+//
+// On a failed install the old binary is restored from the backup. If the
+// restore itself fails, the backup is deliberately kept and its path
+// reported in the error: removing it would destroy the only remaining copy
+// of the old binary.
+//
+// installBinary does not remove binaryPath; the caller is responsible
+// (DownloadAndInstall defers it).
+func installBinary(binaryPath, execPath string) error {
 	if err := os.Chmod(binaryPath, 0o755); err != nil {
 		return fmt.Errorf("setting permissions: %w", err)
 	}
 
 	backupPath := execPath + ".old"
-	if err := os.Rename(execPath, backupPath); err != nil {
-		return fmt.Errorf("backing up old binary (try sudo?): %w", err)
+	if err := osRename(execPath, backupPath); err != nil {
+		return fmt.Errorf("backing up old binary: %w%s", err, renameHint(err))
 	}
 
-	if err := os.Rename(binaryPath, execPath); err != nil {
-		_ = os.Rename(backupPath, execPath)
-		_ = os.Remove(backupPath)
-		return fmt.Errorf("installing new binary (try sudo?): %w", err)
+	if err := osRename(binaryPath, execPath); err != nil {
+		restoreErr := osRename(backupPath, execPath)
+		if restoreErr == nil {
+			return fmt.Errorf("installing new binary: %w%s", err, renameHint(err))
+		}
+		return fmt.Errorf("installing new binary: %v; restoring the old binary also failed: %v; the old binary is kept at %s", err, restoreErr, backupPath)
 	}
 
 	_ = os.Remove(backupPath)
 	return nil
+}
+
+// osRename is an indirection over os.Rename so tests can simulate specific
+// renames failing.
+var osRename = os.Rename
+
+// renameHint appends advice for the failure classes that actually happen in
+// the self-update renames. "Try sudo" is only right for permission errors;
+// a cross-filesystem move (EXDEV) is not fixable with sudo.
+func renameHint(err error) string {
+	switch {
+	case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM):
+		return " — the binary's directory is not writable, try running with sudo"
+	case errors.Is(err, syscall.EXDEV):
+		return " — the temp directory and the binary's location are on different filesystems, self-update cannot move the binary across volumes, install manually from the GitHub release"
+	}
+	return ""
 }
 
 func extractBinary(tarballPath string) (string, error) {

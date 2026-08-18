@@ -6,14 +6,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestIsNewer(t *testing.T) {
@@ -33,12 +37,67 @@ func TestIsNewer(t *testing.T) {
 		{"dev", "", false},
 		{"v1.0", "v1.0.1", true},
 		{"v1.0.0", "v1.0", false},
+		// Two-digit patch ordering (real tags in this repo: v0.3.2, v0.3.10).
+		{"v0.3.2", "v0.3.10", true},
+		// Empty current parses as 0.0.0.
+		{"", "v0.0.1", true},
 	}
 
 	for _, tc := range tests {
 		got := IsNewer(tc.current, tc.latest)
 		if got != tc.want {
 			t.Errorf("IsNewer(%q, %q) = %v, want %v", tc.current, tc.latest, got, tc.want)
+		}
+	}
+}
+
+func TestIsNewerSuffixedVersions(t *testing.T) {
+	tests := []struct {
+		current string
+		latest  string
+		want    bool
+	}{
+		// git describe tails (Taskfile local builds): the patch part must
+		// keep its numeric prefix instead of zeroing out, so a local build
+		// made after a release is not offered that release as an update.
+		{"v0.1.3-9-g728e74c", "v0.1.3", false},
+		{"v0.1.3-dirty", "v0.1.3", false},
+		{"v0.1.3-9-g728e74c", "v0.1.4", true},
+		// Go pseudo-version build (go build of a dirty module), genuinely older.
+		{"v0.1.1-0.20260812140328-5e88d3d7c84d+dirty", "v0.1.3", true},
+		// Bare short hash (git describe --always with no tags): parses as 0.0.0.
+		{"abc1234", "v0.1.0", true},
+		// Pre-release suffixes compare as their base version (deliberate
+		// simplification; /releases/latest never serves pre-releases).
+		{"0.1.5-beta", "0.1.5", false},
+		{"0.2.0-rc1", "0.2.0", false},
+		// A pre-release of a higher version is still ahead of an older stable.
+		{"0.1.9", "0.2.0-rc1", true},
+		// A stable is not older than a pre-release of the same version.
+		{"0.2.0", "0.2.0-alpha", false},
+	}
+
+	for _, tc := range tests {
+		got := IsNewer(tc.current, tc.latest)
+		if got != tc.want {
+			t.Errorf("IsNewer(%q, %q) = %v, want %v", tc.current, tc.latest, got, tc.want)
+		}
+	}
+}
+
+func TestLeadingInt(t *testing.T) {
+	tests := map[string]int{
+		"0":            0,
+		"12":           12,
+		"3-9-g728e74c": 3,
+		"3-dirty":      3,
+		"0-rc1":        0,
+		"abc":          0,
+		"":             0,
+	}
+	for in, want := range tests {
+		if got := leadingInt(in); got != want {
+			t.Errorf("leadingInt(%q) = %d, want %d", in, got, want)
 		}
 	}
 }
@@ -97,6 +156,123 @@ func TestCheckLatest(t *testing.T) {
 	}
 	if len(release.Assets) != 2 {
 		t.Errorf("got %d assets, want 2", len(release.Assets))
+	}
+}
+
+func TestCheckLatestSendsToken(t *testing.T) {
+	var gotAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(Release{TagName: "v0.2.0"})
+	}))
+	defer ts.Close()
+
+	prev := apiBaseURL
+	apiBaseURL = ts.URL
+	defer func() { apiBaseURL = prev }()
+
+	t.Setenv("GITHUB_TOKEN", "gh-test-token")
+	if _, err := CheckLatest(); err != nil {
+		t.Fatalf("CheckLatest() error = %v", err)
+	}
+	if gotAuth != "Bearer gh-test-token" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer gh-test-token")
+	}
+}
+
+func TestCheckLatestNoTokenHeaderWhenUnset(t *testing.T) {
+	var gotAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(Release{TagName: "v0.2.0"})
+	}))
+	defer ts.Close()
+
+	prev := apiBaseURL
+	apiBaseURL = ts.URL
+	defer func() { apiBaseURL = prev }()
+
+	t.Setenv("GITHUB_TOKEN", "")
+	if _, err := CheckLatest(); err != nil {
+		t.Fatalf("CheckLatest() error = %v", err)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization = %q, want empty when GITHUB_TOKEN is unset", gotAuth)
+	}
+}
+
+func TestCheckLatestRateLimitedUnauthenticated(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(30*time.Minute).Unix(), 10))
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded for 1.2.3.4."}`))
+	}))
+	defer ts.Close()
+
+	prev := apiBaseURL
+	apiBaseURL = ts.URL
+	defer func() { apiBaseURL = prev }()
+
+	t.Setenv("GITHUB_TOKEN", "")
+	_, err := CheckLatest()
+	if err == nil {
+		t.Fatal("expected rate limit error, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{"rate limit exceeded", "30m", "GITHUB_TOKEN"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error = %q, want it to contain %q", msg, want)
+		}
+	}
+}
+
+func TestCheckLatestRateLimitedAuthenticated(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded for user."}`))
+	}))
+	defer ts.Close()
+
+	prev := apiBaseURL
+	apiBaseURL = ts.URL
+	defer func() { apiBaseURL = prev }()
+
+	t.Setenv("GITHUB_TOKEN", "gh-test-token")
+	_, err := CheckLatest()
+	if err == nil {
+		t.Fatal("expected rate limit error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "rate limit exceeded") {
+		t.Errorf("error = %q, want rate-limit message", msg)
+	}
+	if strings.Contains(msg, "set GITHUB_TOKEN") {
+		t.Errorf("error = %q, should not suggest GITHUB_TOKEN when already set", msg)
+	}
+}
+
+func TestCheckLatestNonRateLimitError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+	}))
+	defer ts.Close()
+
+	prev := apiBaseURL
+	apiBaseURL = ts.URL
+	defer func() { apiBaseURL = prev }()
+
+	t.Setenv("GITHUB_TOKEN", "")
+	_, err := CheckLatest()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GitHub API returned 403") {
+		t.Errorf("error = %q, want generic API error", err)
 	}
 }
 
@@ -161,6 +337,12 @@ func TestParseChecksumsNotFound(t *testing.T) {
 }
 
 func TestDownloadAndInstall(t *testing.T) {
+	// End-to-end: this exercises the real rename dance against
+	// os.Executable(), i.e. the running test binary itself. That is safe —
+	// the test executable is a throwaway build artifact and renaming a
+	// running executable leaves the old inode mapped for this process — but
+	// it is the only test that covers the real os.Executable() path, so
+	// keep it real.
 	tarballContent, tarballHash := createTestTarball(t)
 	tarballName := fmt.Sprintf("llamawizard_v0.1.0_darwin_%s.tar.gz", runtime.GOARCH)
 
@@ -419,6 +601,140 @@ func TestParseChecksumsExtraWhitespace(t *testing.T) {
 	}
 	if hash != "def456" {
 		t.Errorf("hash = %q, want %q", hash, "def456")
+	}
+}
+
+// writeInstallFixture creates a fake "installed" binary at execPath and a
+// fake freshly-extracted binary at binaryPath (in a separate directory, as
+// in production: temp dir vs install dir).
+func writeInstallFixture(t *testing.T) (binaryPath, execPath string) {
+	t.Helper()
+
+	execDir := t.TempDir()
+	execPath = filepath.Join(execDir, "llamawizard")
+	if err := os.WriteFile(execPath, []byte("old binary content"), 0o755); err != nil {
+		t.Fatalf("writing fake installed binary: %v", err)
+	}
+
+	binaryPath = filepath.Join(t.TempDir(), "llamawizard-new")
+	if err := os.WriteFile(binaryPath, []byte("new binary content"), 0o600); err != nil {
+		t.Fatalf("writing fake new binary: %v", err)
+	}
+	return binaryPath, execPath
+}
+
+func TestInstallBinarySuccess(t *testing.T) {
+	binaryPath, execPath := writeInstallFixture(t)
+	defer func() { _ = os.Remove(binaryPath) }()
+
+	if err := installBinary(binaryPath, execPath); err != nil {
+		t.Fatalf("installBinary() error = %v", err)
+	}
+
+	data, err := os.ReadFile(execPath)
+	if err != nil {
+		t.Fatalf("reading installed binary: %v", err)
+	}
+	if string(data) != "new binary content" {
+		t.Errorf("installed content = %q, want new content", data)
+	}
+	if _, err := os.Stat(execPath + ".old"); !os.IsNotExist(err) {
+		t.Errorf("backup should be removed after success, stat err = %v", err)
+	}
+}
+
+func TestInstallBinaryFailedInstallRestoresBackup(t *testing.T) {
+	binaryPath, execPath := writeInstallFixture(t)
+	defer func() { _ = os.Remove(binaryPath) }()
+
+	realRename := osRename
+	calls := 0
+	osRename = func(old, new string) error {
+		calls++
+		if calls == 2 { // the install rename
+			return errors.New("simulated install failure")
+		}
+		return realRename(old, new)
+	}
+	defer func() { osRename = realRename }()
+
+	if err := installBinary(binaryPath, execPath); err == nil {
+		t.Fatal("expected error from failed install, got nil")
+	}
+
+	data, err := os.ReadFile(execPath)
+	if err != nil {
+		t.Fatalf("old binary should be restored: %v", err)
+	}
+	if string(data) != "old binary content" {
+		t.Errorf("restored content = %q, want old content", data)
+	}
+	if _, err := os.Stat(execPath + ".old"); !os.IsNotExist(err) {
+		t.Errorf("backup should be gone after successful restore, stat err = %v", err)
+	}
+}
+
+func TestInstallBinaryFailedRestoreKeepsBackup(t *testing.T) {
+	binaryPath, execPath := writeInstallFixture(t)
+	defer func() { _ = os.Remove(binaryPath) }()
+
+	realRename := osRename
+	calls := 0
+	osRename = func(old, new string) error {
+		calls++
+		if calls == 2 || calls == 3 { // install rename, then the restore
+			return errors.New("simulated failure")
+		}
+		return realRename(old, new)
+	}
+	defer func() { osRename = realRename }()
+
+	err := installBinary(binaryPath, execPath)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), execPath+".old") {
+		t.Errorf("error should name the backup path for recovery, got: %v", err)
+	}
+
+	data, rerr := os.ReadFile(execPath + ".old")
+	if rerr != nil {
+		t.Fatalf("backup must be kept when the restore fails: %v", rerr)
+	}
+	if string(data) != "old binary content" {
+		t.Errorf("backup content = %q, want old content", data)
+	}
+	if _, serr := os.Stat(execPath); !os.IsNotExist(serr) {
+		t.Errorf("execPath should not exist after failed install and restore, stat err = %v", serr)
+	}
+}
+
+func TestInstallBinaryRenameHints(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantSub string
+	}{
+		{"permission", syscall.EACCES, "sudo"},
+		{"cross-filesystem", syscall.EXDEV, "different filesystems"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			binaryPath, execPath := writeInstallFixture(t)
+			defer func() { _ = os.Remove(binaryPath) }()
+
+			realRename := osRename
+			osRename = func(old, new string) error { return tc.err }
+			defer func() { osRename = realRename }()
+
+			err := installBinary(binaryPath, execPath)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.wantSub)
+			}
+		})
 	}
 }
 
