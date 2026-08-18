@@ -49,7 +49,10 @@ func Lines(path string, n int) (string, error) {
 		return "", err
 	}
 
-	if info.Size() > maxWindow {
+	// len(data) can be 0 if the file was truncated (e.g. logrotate
+	// copytruncate) between the Stat and the read; the stale size then
+	// still claims the window path, so guard the indexing below.
+	if info.Size() > maxWindow && len(data) > 0 {
 		// data[0] is the byte before the window. If it is a newline, the
 		// window starts on a line boundary and its first line is complete;
 		// otherwise the first line is a fragment ending at the first
