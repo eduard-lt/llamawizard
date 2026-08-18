@@ -182,7 +182,7 @@ func TestExtractBinary_TypeflagSpellings(t *testing.T) {
 	const content = "SPELLING_TEST_BINARY"
 	for name, tf := range map[string]byte{
 		"classic '0'":  tar.TypeReg,
-		"NUL spelling": tar.TypeRegA,
+		"NUL spelling": tar.TypeRegA, //nolint:staticcheck // SA1019 deliberate: TypeRegA is the NUL spelling this test exists to pin
 	} {
 		t.Run(name, func(t *testing.T) {
 			tmpDir := t.TempDir()
@@ -439,7 +439,7 @@ func TestDownloadTemp_ClosesBodyOnNon200(t *testing.T) {
 		}
 	}
 	go func() { _ = srv.Serve(ls) }()
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 
 	_, _, err = downloadTemp("http://"+ls.Addr().String(), 0)
 	if err == nil {
