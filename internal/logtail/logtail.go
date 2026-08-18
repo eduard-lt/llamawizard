@@ -2,6 +2,7 @@
 package logtail
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"strings"
@@ -36,7 +37,9 @@ func Lines(path string, n int) (string, error) {
 	}
 
 	if info.Size() > maxWindow {
-		if _, err := f.Seek(info.Size()-maxWindow, io.SeekStart); err != nil {
+		// Read one extra byte before the window as well: whether it is a
+		// newline tells us if the window starts on a line boundary.
+		if _, err := f.Seek(info.Size()-maxWindow-1, io.SeekStart); err != nil {
 			return "", err
 		}
 	}
@@ -46,18 +49,24 @@ func Lines(path string, n int) (string, error) {
 		return "", err
 	}
 
+	if info.Size() > maxWindow {
+		// data[0] is the byte before the window. If it is a newline, the
+		// window starts on a line boundary and its first line is complete;
+		// otherwise the first line is a fragment ending at the first
+		// newline, or the whole window when it is one very long line.
+		if data[0] == '\n' {
+			data = data[1:]
+		} else if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			data = data[i+1:]
+		} else {
+			data = data[1:]
+		}
+	}
+
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	for i, l := range lines {
 		// Match bufio.ScanLines: strip the CR from CRLF line endings.
 		lines[i] = strings.TrimSuffix(l, "\r")
-	}
-
-	if info.Size() > maxWindow && len(lines) > 1 {
-		// The window starts mid-line (or right after a newline, giving an
-		// empty first element): drop the partial first line. When the
-		// window is a single line with no newline in it, it is the
-		// truncated tail of one very long line, which is kept.
-		lines = lines[1:]
 	}
 
 	if len(lines) == 1 && lines[0] == "" {

@@ -99,6 +99,32 @@ func TestLines_FileLargerThanWindow_NoTrailingNewline(t *testing.T) {
 	}
 }
 
+func TestLines_WindowStartsOnLineBoundary(t *testing.T) {
+	// 22 lines of exactly 16 KiB each: the 256 KiB window starts exactly
+	// on the boundary before line 6, so all 16 window lines are complete
+	// and none may be dropped. The window holds fewer than 20+1 lines, so
+	// a wrongly dropped line would show up in the tail.
+	const lineLen = 16 << 10
+	var b strings.Builder
+	for i := 0; i < 22; i++ {
+		fmt.Fprintf(&b, "line %02d: %s\n", i, strings.Repeat("x", lineLen-10))
+	}
+	got, err := Lines(writeLog(t, b.String()), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(got, "\n")
+	if len(lines) != 16 {
+		t.Fatalf("got %d lines, want 16 (the window holds exactly 16 complete lines)", len(lines))
+	}
+	if !strings.HasPrefix(lines[0], "line 06: ") {
+		t.Errorf("first tail line must be the complete boundary line, got %q...", lines[0][:20])
+	}
+	if !strings.HasPrefix(lines[15], "line 21: ") {
+		t.Errorf("last tail line must be line 21, got %q...", lines[15][:20])
+	}
+}
+
 func TestLines_SingleLineLongerThanWindow(t *testing.T) {
 	// One 300 KB line with no newlines: the bounded read must not load the
 	// whole line, and must return the truncated tail instead of nothing.
