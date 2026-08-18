@@ -44,12 +44,12 @@ type Asset struct {
 // parts. A trailing suffix on a part is ignored, so a suffixed version
 // compares equal to its base version: a local build made after v0.1.3
 // ("v0.1.3-9-g728e74c", "v0.1.3-dirty") is not offered v0.1.3 as an
-// update, and a pre-release tag ("0.2.0-rc1") is not treated as newer
-// than the release it previews. One deliberate deviation from semver:
-// a pre-release *current* compares equal to the matching stable release
-// instead of older (GitHub's /releases/latest never serves pre-releases
-// anyway, so the input is unreachable in practice). "dev" — unversioned
-// local builds — is always considered older than any release.
+// update. A pre-release therefore compares equal to the matching stable
+// release in either direction: in the *current* direction that is a
+// deliberate deviation from semver (such a build is not offered the
+// release it previews), and in the *latest* direction it is unreachable
+// anyway (GitHub's /releases/latest never serves pre-releases). "dev" —
+// unversioned local builds — is always considered older than any release.
 func IsNewer(current, latest string) bool {
 	if current == "dev" {
 		return latest != ""
