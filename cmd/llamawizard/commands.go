@@ -444,6 +444,21 @@ func runModelsAdd(args []string) {
 	}
 }
 
+// removeModelsByName splits st.Models into the entries that do not match
+// slug and a count of the ones that do. Every matching entry is removed, so
+// a state corrupted with duplicate slugs is cleaned up in a single call.
+func removeModelsByName(st *state.State, slug string) (kept []state.ModelEntry, removed int) {
+	kept = make([]state.ModelEntry, 0, len(st.Models))
+	for _, m := range st.Models {
+		if m.Slug == slug {
+			removed++
+			continue
+		}
+		kept = append(kept, m)
+	}
+	return kept, removed
+}
+
 func runModelsRemove(name string) {
 	st, err := state.Load("")
 	if err != nil {
@@ -451,27 +466,23 @@ func runModelsRemove(name string) {
 		os.Exit(1)
 	}
 
-	idx := -1
-	for i, m := range st.Models {
-		if m.Slug == name {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
+	kept, removed := removeModelsByName(st, name)
+	if removed == 0 {
 		fmt.Printf("Model '%s' not found.\n", name)
 		os.Exit(1)
 	}
-
-	removed := st.Models[idx]
-	st.Models = append(st.Models[:idx], st.Models[idx+1:]...)
+	st.Models = kept
 
 	if err := st.Save(""); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving state: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Removed %s from config.\n", removed.Slug)
+	if removed > 1 {
+		fmt.Printf("Removed %d duplicate entries for %s from config.\n", removed, name)
+	} else {
+		fmt.Printf("Removed %s from config.\n", name)
+	}
 	fmt.Println("The model file was NOT deleted. Use 'models delete' to also remove the file.")
 
 	regenerateConfig(st)
@@ -484,19 +495,11 @@ func runModelsDelete(name string, skipConfirm bool) {
 		os.Exit(1)
 	}
 
-	idx := -1
-	for i, m := range st.Models {
-		if m.Slug == name {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
+	kept, removed := removeModelsByName(st, name)
+	if removed == 0 {
 		fmt.Printf("Model '%s' not found.\n", name)
 		os.Exit(1)
 	}
-
-	removed := st.Models[idx]
 
 	if !skipConfirm {
 		fmt.Printf("This will remove '%s' from config AND delete its files.\n", name)
@@ -511,20 +514,24 @@ func runModelsDelete(name string, skipConfirm bool) {
 	}
 
 	home, _ := os.UserHomeDir()
-	modelDir := filepath.Join(home, "models", removed.Slug)
+	modelDir := filepath.Join(home, "models", name)
 	if err := os.RemoveAll(modelDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not delete model files: %v\n", err)
 	} else {
 		fmt.Printf("Deleted %s\n", modelDir)
 	}
 
-	st.Models = append(st.Models[:idx], st.Models[idx+1:]...)
+	st.Models = kept
 	if err := st.Save(""); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving state: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Removed %s from config and disk.\n", removed.Slug)
+	if removed > 1 {
+		fmt.Printf("Removed %d duplicate entries for %s from config and disk.\n", removed, name)
+	} else {
+		fmt.Printf("Removed %s from config and disk.\n", name)
+	}
 
 	regenerateConfig(st)
 }

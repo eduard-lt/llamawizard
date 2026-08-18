@@ -505,7 +505,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.dlProgressBars[msg.modelIdx].SetPercent(pct))
 			}
 		}
-		if msg.done && msg.err == nil && msg.repo != "" {
+		// Skip slugs already in state (e.g. re-downloaded within this
+		// session): a duplicate entry would persist to state.json before
+		// GenerateConfig rejects it, breaking every later config
+		// regeneration until it is cleaned up.
+		if msg.done && msg.err == nil && msg.repo != "" && !m.installedSlugs[msg.slug] {
 			m.State.Models = append(m.State.Models, state.ModelEntry{
 				Slug:        msg.slug,
 				Name:        msg.slug,
@@ -516,6 +520,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				SizeBytes:   msg.size,
 				InstalledAt: time.Now().Format(time.RFC3339),
 			})
+			m.installedSlugs[msg.slug] = true
 			_ = m.State.Save("")
 		} else if msg.done && msg.err != nil {
 			if m.dlErr == nil {

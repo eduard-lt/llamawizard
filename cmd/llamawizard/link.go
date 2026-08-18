@@ -131,9 +131,8 @@ func slugFromFilename(filename string) string {
 // deriveSlug derives a slug for a new model. When a name is given it is
 // used as the base, but the quant is always appended so different
 // quantizations of the same model never collide. It does not check against
-// already-installed models: re-adding a model whose slug already exists
-// produces a duplicate state entry, which llamaswap.GenerateConfig rejects
-// with an error.
+// already-installed models: registerModel rejects a slug that is already in
+// state, before anything is saved.
 func deriveSlug(name, filename string) string {
 	if name != "" {
 		base := slugFromName(name)
@@ -327,7 +326,27 @@ func fileSize(path string) int64 {
 	return st.Size()
 }
 
+// slugExists reports whether a model with this slug is already in state.
+// registerModel consults it before saving: a duplicate entry would persist
+// to state.json first, and llamaswap.GenerateConfig would then reject every
+// subsequent config regeneration (models remove, wizard, updateAllConfig)
+// until the duplicate is cleaned up.
+func slugExists(st *state.State, slug string) bool {
+	for _, m := range st.Models {
+		if m.Slug == slug {
+			return true
+		}
+	}
+	return false
+}
+
 func registerModel(st *state.State, slug, name, repo, filename, mmproj string, size int64) {
+	if slugExists(st, slug) {
+		fmt.Fprintf(os.Stderr, "\nModel '%s' is already installed.\n", slug)
+		fmt.Println("Remove it first with: llamawizard models remove " + slug)
+		os.Exit(1)
+	}
+
 	quant := quantFromFilename(filename)
 	if quant == "" {
 		quant = "custom"
