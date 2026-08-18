@@ -13,9 +13,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestIsNewer(t *testing.T) {
@@ -154,6 +156,123 @@ func TestCheckLatest(t *testing.T) {
 	}
 	if len(release.Assets) != 2 {
 		t.Errorf("got %d assets, want 2", len(release.Assets))
+	}
+}
+
+func TestCheckLatestSendsToken(t *testing.T) {
+	var gotAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(Release{TagName: "v0.2.0"})
+	}))
+	defer ts.Close()
+
+	prev := apiBaseURL
+	apiBaseURL = ts.URL
+	defer func() { apiBaseURL = prev }()
+
+	t.Setenv("GITHUB_TOKEN", "gh-test-token")
+	if _, err := CheckLatest(); err != nil {
+		t.Fatalf("CheckLatest() error = %v", err)
+	}
+	if gotAuth != "Bearer gh-test-token" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer gh-test-token")
+	}
+}
+
+func TestCheckLatestNoTokenHeaderWhenUnset(t *testing.T) {
+	var gotAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(Release{TagName: "v0.2.0"})
+	}))
+	defer ts.Close()
+
+	prev := apiBaseURL
+	apiBaseURL = ts.URL
+	defer func() { apiBaseURL = prev }()
+
+	t.Setenv("GITHUB_TOKEN", "")
+	if _, err := CheckLatest(); err != nil {
+		t.Fatalf("CheckLatest() error = %v", err)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization = %q, want empty when GITHUB_TOKEN is unset", gotAuth)
+	}
+}
+
+func TestCheckLatestRateLimitedUnauthenticated(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(30*time.Minute).Unix(), 10))
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded for 1.2.3.4."}`))
+	}))
+	defer ts.Close()
+
+	prev := apiBaseURL
+	apiBaseURL = ts.URL
+	defer func() { apiBaseURL = prev }()
+
+	t.Setenv("GITHUB_TOKEN", "")
+	_, err := CheckLatest()
+	if err == nil {
+		t.Fatal("expected rate limit error, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{"rate limit exceeded", "30m", "GITHUB_TOKEN"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error = %q, want it to contain %q", msg, want)
+		}
+	}
+}
+
+func TestCheckLatestRateLimitedAuthenticated(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded for user."}`))
+	}))
+	defer ts.Close()
+
+	prev := apiBaseURL
+	apiBaseURL = ts.URL
+	defer func() { apiBaseURL = prev }()
+
+	t.Setenv("GITHUB_TOKEN", "gh-test-token")
+	_, err := CheckLatest()
+	if err == nil {
+		t.Fatal("expected rate limit error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "rate limit exceeded") {
+		t.Errorf("error = %q, want rate-limit message", msg)
+	}
+	if strings.Contains(msg, "set GITHUB_TOKEN") {
+		t.Errorf("error = %q, should not suggest GITHUB_TOKEN when already set", msg)
+	}
+}
+
+func TestCheckLatestNonRateLimitError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+	}))
+	defer ts.Close()
+
+	prev := apiBaseURL
+	apiBaseURL = ts.URL
+	defer func() { apiBaseURL = prev }()
+
+	t.Setenv("GITHUB_TOKEN", "")
+	_, err := CheckLatest()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "GitHub API returned 403") {
+		t.Errorf("error = %q, want generic API error", err)
 	}
 }
 

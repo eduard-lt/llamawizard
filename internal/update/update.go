@@ -104,6 +104,9 @@ func CheckLatest() (*Release, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", "llamawizard")
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -116,7 +119,7 @@ func CheckLatest() (*Release, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
+		return nil, ghAPIError(resp, body)
 	}
 
 	var release Release
@@ -129,6 +132,38 @@ func CheckLatest() (*Release, error) {
 	}
 
 	return &release, nil
+}
+
+// ghAPIError turns a non-200 GitHub API response into an actionable error.
+// Rate limits are transient: they get the reset time and, when the call was
+// unauthenticated, a pointer at GITHUB_TOKEN — instead of a raw dump of
+// GitHub's JSON.
+func ghAPIError(resp *http.Response, body []byte) error {
+	if !isRateLimited(resp, body) {
+		return fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
+	}
+	msg := "GitHub API rate limit exceeded"
+	if reset := resp.Header.Get("X-RateLimit-Reset"); reset != "" {
+		if ts, err := strconv.ParseInt(reset, 10, 64); err == nil {
+			if in := time.Until(time.Unix(ts, 0)).Round(time.Minute); in > 0 {
+				msg += fmt.Sprintf(", resets in about %s", in)
+			}
+		}
+	}
+	if os.Getenv("GITHUB_TOKEN") == "" {
+		msg += "; set GITHUB_TOKEN to raise the limit from 60 to 5000 requests/hour"
+	}
+	return errors.New(msg)
+}
+
+func isRateLimited(resp *http.Response, body []byte) bool {
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
+		return false
+	}
+	if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(string(body)), "rate limit")
 }
 
 func findAsset(release *Release) (name string, url string, err error) {
