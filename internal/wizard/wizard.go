@@ -2,8 +2,6 @@ package wizard
 
 import (
 	"fmt"
-	"math"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +22,7 @@ import (
 	"github.com/eduard-lt/llamawizard/internal/llamaswap"
 	"github.com/eduard-lt/llamawizard/internal/network"
 	"github.com/eduard-lt/llamawizard/internal/pi"
+	"github.com/eduard-lt/llamawizard/internal/ripple"
 	"github.com/eduard-lt/llamawizard/internal/state"
 	"github.com/eduard-lt/llamawizard/internal/whichllm"
 )
@@ -50,17 +49,6 @@ const (
 var screenOrder = []Screen{ScreenWelcome, ScreenDeps, ScreenHardware, ScreenModelSelect,
 	ScreenDownload, ScreenBuild, ScreenConfig, ScreenPiSetup, ScreenPiDefault,
 	ScreenPort, ScreenAPIKey, ScreenLaunchAgent, ScreenHealth, ScreenDone}
-
-type ripple struct {
-	x, y float64
-	r    float64
-	maxR float64
-	life float64
-}
-
-type rippleTickMsg struct{}
-
-var rippleChars = []rune{' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'}
 
 const (
 	blueFG       = "\x1b[34m"
@@ -237,7 +225,7 @@ type Model struct {
 	healthReport health.Report
 	healthDone   bool
 
-	ripples []ripple
+	rip     ripple.Model
 	addOnly bool
 	version string
 
@@ -288,6 +276,7 @@ func InitialModel(version string) Model {
 
 	m := Model{
 		Screen:         ScreenWelcome,
+		rip:            ripple.New(),
 		spinner:        sp,
 		portInput:      portTI,
 		keyInput:       ki,
@@ -341,9 +330,9 @@ func InitialAddModel(version string) Model {
 
 func (m Model) Init() tea.Cmd {
 	if m.addOnly {
-		return tea.Batch(m.spinner.Tick, rippleTickCmd(), runLoadModels)
+		return tea.Batch(m.spinner.Tick, m.rip.Tick(), runLoadModels)
 	}
-	return tea.Batch(m.spinner.Tick, rippleTickCmd())
+	return tea.Batch(m.spinner.Tick, m.rip.Tick())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -357,6 +346,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+		m.rip.SetSize(msg.Width, msg.Height)
 		m.buildVp.Width = msg.Width - 8
 		m.buildVp.Height = msg.Height - 10
 		m.modelVp.Width = msg.Width - 8
@@ -367,10 +357,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
-	case rippleTickMsg:
+	case ripple.TickMsg:
 		if m.Screen == ScreenWelcome {
-			m.updateRipples()
-			return m, rippleTickCmd()
+			m.rip.Step()
+			return m, m.rip.Tick()
 		}
 		return m, nil
 
@@ -554,7 +544,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ScreenWelcome:
 		if key == "enter" {
 			m.Screen = ScreenDeps
-			m.ripples = nil
+			m.rip = ripple.New()
 			return m, runCheckDeps
 		}
 		return m, nil
@@ -881,76 +871,6 @@ func (m Model) View() string {
 	return ""
 }
 
-var tickDelay = time.Second / 15
-
-func rippleTickCmd() tea.Cmd {
-	return tea.Tick(tickDelay, func(t time.Time) tea.Msg {
-		return rippleTickMsg{}
-	})
-}
-
-func (m *Model) updateRipples() {
-	if m.Width == 0 || m.Height == 0 {
-		return
-	}
-	rate := 0.15 + rand.Float64()*0.15
-
-	var alive []ripple
-	for _, r := range m.ripples {
-		r.r += 0.25
-		r.life -= 0.015
-		if r.life > 0 && r.r < r.maxR {
-			alive = append(alive, r)
-		}
-	}
-
-	if rand.Float64() < rate {
-		x := 4 + rand.Float64()*float64(m.Width-8)
-		y := 2 + rand.Float64()*float64(m.Height-4)
-		maxR := 4 + rand.Float64()*14
-		alive = append(alive, ripple{x: x, y: y, r: 0.3, maxR: maxR, life: 1.0})
-	}
-
-	m.ripples = alive
-}
-
-func (m *Model) rippleCharAt(gx, gy int) rune {
-	if len(m.ripples) == 0 {
-		return ' '
-	}
-	best := float64(0.0)
-	for _, r := range m.ripples {
-		ri := int(r.r)
-		if ri <= 0 {
-			continue
-		}
-		dist := math.Sqrt(float64((gx-int(r.x))*(gx-int(r.x))+(gy-int(r.y))*(gy-int(r.y)))) + 0.3
-		outerR := float64(ri) + 0.6
-		innerR := float64(ri) - 0.8
-		if innerR < 0 {
-			innerR = 0
-		}
-		if dist >= innerR && dist <= outerR {
-			edge := math.Abs(dist - float64(ri))
-			sharp := 1.0 - (edge / 0.8)
-			if sharp > 0 {
-				v := r.life * sharp
-				if v > best {
-					best = v
-				}
-			}
-		}
-	}
-	if best <= 0 {
-		return ' '
-	}
-	ci := int(best * float64(len(rippleChars)-1))
-	if ci >= len(rippleChars) {
-		ci = len(rippleChars) - 1
-	}
-	return rippleChars[ci]
-}
-
 func (m *Model) renderRipples() string {
 	if m.Width == 0 || m.Height == 0 {
 		return ""
@@ -1010,10 +930,12 @@ func (m *Model) renderRipples() string {
 	hatStart := subIdx + 2
 	hatEnd := hatStart + len(hatLines)
 
-	if len(m.ripples) == 0 {
+	if m.rip.Empty() {
 		joined := strings.Join(fgBlock, "\n")
 		return lipgloss.Place(m.Width, m.Height, lipgloss.Center, lipgloss.Center, joined)
 	}
+
+	field := m.rip.Chars(m.Width, m.Height)
 
 	fgY := (m.Height - len(fgBlock)) / 2
 	if fgY < 0 {
@@ -1053,11 +975,11 @@ func (m *Model) renderRipples() string {
 						continue
 					}
 				}
-				sb.WriteRune(m.rippleCharAt(x, y))
+				sb.WriteRune(field[y][x])
 			}
 		} else {
 			for x := 0; x < m.Width; x++ {
-				sb.WriteRune(m.rippleCharAt(x, y))
+				sb.WriteRune(field[y][x])
 			}
 		}
 		sb.WriteString(resetFG)
