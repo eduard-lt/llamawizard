@@ -50,8 +50,7 @@ Follows [Semantic Versioning](https://semver.org). The three `task` commands:
 | `task release:minor` | `0.1.5 → 0.2.0` | A new user-facing feature / new command, backward compatible. |
 | `task release:major` | `0.2.0 → 1.0.0` | Breaking change (CLI flags removed, config format changes, etc.). |
 
-When in doubt between patch and minor: if a user upgrading won't have to change
-anything, it's a **patch**.
+When in doubt between patch and minor: if a user upgrading won't have to change anything, it's a **patch**.
 
 > Pre-1.0 note: this project is `0.x`, where "minor" bumps are also used liberally for
 > features. That's fine and conventional for pre-1.0 software.
