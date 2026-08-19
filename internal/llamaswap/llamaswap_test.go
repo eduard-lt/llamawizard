@@ -1088,6 +1088,23 @@ func TestResolveLlamaServerPath_FindsOnPath(t *testing.T) {
 	t.Logf("resolved llama-server: %s", path)
 }
 
+func TestResolveLlamaSwapPath_FindsOnPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	bin := filepath.Join(tmpDir, binaryName)
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'version: v245 (30470a4)'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpDir)
+
+	got, err := ResolveLlamaSwapPath()
+	if err != nil {
+		t.Fatalf("ResolveLlamaSwapPath failed: %v", err)
+	}
+	if got != bin {
+		t.Errorf("ResolveLlamaSwapPath = %q, want %q", got, bin)
+	}
+}
+
 // --- B8: GenerateConfig empty-path handling ---
 
 func TestGenerateConfig_EmptyPathResolves(t *testing.T) {

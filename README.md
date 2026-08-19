@@ -190,7 +190,7 @@ Running `llamawizard` with no arguments walks through every step:
 | `llamawizard models delete` | Remove a model from config **and delete its file** |
 | `llamawizard uninstall` | Stop service and remove LaunchAgent |
 | `llamawizard update` | Check for and install updates |
-| `llamawizard version` | Show version |
+| `llamawizard version` | Show versions of llamawizard, llama.cpp, and llama-swap |
 | `llamawizard help` | Show a command reference |
 
 Notes on commands whose behavior isn't obvious from the name alone:
