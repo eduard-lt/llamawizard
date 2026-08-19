@@ -35,3 +35,14 @@ func TestDetect(t *testing.T) {
 		t.Errorf("RAM %d bytes seems too low for a modern Mac", h.RAM)
 	}
 }
+
+func TestTotalRAM(t *testing.T) {
+	ram, err := TotalRAM()
+	if err != nil {
+		t.Fatalf("TotalRAM failed: %v", err)
+	}
+	if ram == 0 {
+		t.Fatal("TotalRAM should be > 0")
+	}
+	t.Logf("TotalRAM: %d bytes (%d GB)", ram, ram/(1024*1024*1024))
+}

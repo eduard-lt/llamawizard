@@ -57,6 +57,11 @@ func Detect() (HardwareInfo, error) {
 	}, nil
 }
 
+// TotalRAM returns the machine's total physical memory in bytes.
+func TotalRAM() (uint64, error) {
+	return sysctlUint64("hw.memsize")
+}
+
 // archCmd runs a command and returns trimmed stdout.
 func archCmd(cmd string, args ...string) (string, error) {
 	out, err := exec.Command(cmd, args...).Output()
