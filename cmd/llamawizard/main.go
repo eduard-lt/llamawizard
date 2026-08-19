@@ -69,7 +69,7 @@ func main() {
 			runPi(os.Args[2:])
 			return
 		case "version", "--version", "-v":
-			fmt.Println("llamawizard", version)
+			runVersion()
 			return
 		case "update":
 			runUpdate()
@@ -178,7 +178,7 @@ OPTIONAL
 MAINTENANCE
   update                    Check for and install updates
   uninstall                 Stop service and remove LaunchAgent
-  version                   Show version
+  version                   Show versions (llamawizard, llama.cpp, llama-swap)
   help [command]            Show help (or help for a specific command)
 
 Examples:
@@ -223,7 +223,7 @@ func printCommandHelp(cmd string) {
 		fmt.Println("llamawizard uninstall — Stop service, remove LaunchAgent, remove state file.")
 	case "version", "help":
 		fmt.Printf("llamawizard %s — %s\n", cmd, map[string]string{
-			"version": "Show version information",
+			"version": "Show versions of llamawizard, llama.cpp, and llama-swap (N/A when not installed)",
 			"help":    "Show this help",
 		}[cmd])
 	default:

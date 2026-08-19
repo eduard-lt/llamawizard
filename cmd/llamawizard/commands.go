@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/eduard-lt/llamawizard/internal/binversion"
 	"github.com/eduard-lt/llamawizard/internal/hardware"
 	"github.com/eduard-lt/llamawizard/internal/health"
 	"github.com/eduard-lt/llamawizard/internal/launchd"
@@ -277,6 +278,51 @@ func runUninstall() {
 	fmt.Println("\nUninstall complete.")
 	fmt.Println("Model files in ~/models/ were left untouched. Delete them manually if desired.")
 	fmt.Println("Config at ~/.local/ai/config/ was left untouched.")
+}
+
+// runVersion prints the versions of llamawizard, llama.cpp, and llama-swap.
+//
+// Component versions are resolved live at call time (never stored): each
+// binary is located from state.json first, then from the generic resolvers,
+// and probed with --version. Anything not resolvable is shown as N/A, so
+// the command never fails hard.
+func runVersion() {
+	st, err := state.Load("")
+	if err != nil || st == nil {
+		st = &state.State{}
+	}
+
+	fmt.Printf("%-12s %s\n", "llamawizard:", version)
+	printComponentVersion("llama.cpp:", resolveVersionPath(st.LlamaCppPath, llamaswap.ResolveLlamaServerPath))
+	printComponentVersion("llama-swap:", resolveVersionPath(st.LlamaSwapPath, llamaswap.ResolveLlamaSwapPath))
+}
+
+// resolveVersionPath returns the state-recorded binary path when it is set
+// and still exists on disk, otherwise the result of the generic fallback
+// resolver. It returns "" when the binary cannot be located at all.
+func resolveVersionPath(stored string, fallback func() (string, error)) string {
+	if stored != "" {
+		if _, err := os.Stat(stored); err == nil {
+			return stored
+		}
+	}
+	if p, err := fallback(); err == nil {
+		return p
+	}
+	return ""
+}
+
+// printComponentVersion prints one aligned "label value" line for a
+// component, substituting N/A when the binary is missing or its version
+// cannot be determined.
+func printComponentVersion(label, path string) {
+	value := "N/A"
+	if path != "" {
+		if v, err := binversion.Version(path); err == nil && v != "" {
+			value = v
+		}
+	}
+	fmt.Printf("%-12s %s\n", label, value)
 }
 
 func runUpdate() {

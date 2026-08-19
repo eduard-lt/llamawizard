@@ -105,6 +105,30 @@ func ResolveLlamaServerPath() (string, error) {
 		strings.Join(knownLlamaServerPaths, ", "))
 }
 
+// ResolveLlamaSwapPath locates the llama-swap binary without triggering any
+// install steps, following the same state-independent convention as
+// ResolveLlamaServerPath.
+//
+// Order:
+//  1. exec.LookPath("llama-swap")
+//  2. ~/.local/bin/llama-swap (where the GitHub-release installer puts it)
+//
+// Returns the path or an error if neither exists.
+func ResolveLlamaSwapPath() (string, error) {
+	if p, err := exec.LookPath(binaryName); err == nil {
+		return p, nil
+	}
+
+	if home, err := os.UserHomeDir(); err == nil {
+		p := filepath.Join(home, ".local", "bin", binaryName)
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+
+	return "", fmt.Errorf("llama-swap not found on PATH or at ~/.local/bin/%s", binaryName)
+}
+
 // verifyBinary runs "<path> --version" and returns true on zero exit.
 func verifyBinary(path string) (bool, error) {
 	_, err := exec.Command(path, "--version").CombinedOutput()
