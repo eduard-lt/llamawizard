@@ -22,6 +22,7 @@ import (
 	"github.com/eduard-lt/llamawizard/internal/pi"
 	"github.com/eduard-lt/llamawizard/internal/state"
 	"github.com/eduard-lt/llamawizard/internal/update"
+	"github.com/eduard-lt/llamawizard/internal/warlock"
 	"github.com/eduard-lt/llamawizard/internal/wizard"
 )
 
@@ -134,6 +135,30 @@ func runRestart() {
 		os.Exit(1)
 	}
 	fmt.Println("Service restarted.")
+}
+
+func runWarlock() {
+	plistPath, err := defaultPlistPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if _, err := os.Stat(plistPath); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "No LaunchAgent found at %s. Run 'llamawizard' (setup) first.\n", plistPath)
+		os.Exit(1)
+	}
+
+	st, err := state.Load("")
+	if err != nil {
+		st = &state.State{} // port display only — never fail hard
+	}
+
+	p := tea.NewProgram(warlock.InitialModel(plistPath, st, version), tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runDoctor() {

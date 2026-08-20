@@ -182,6 +182,7 @@ Running `llamawizard` with no arguments walks through every step:
 | `llamawizard start` | Start the llama-swap service |
 | `llamawizard stop` | Stop the llama-swap service |
 | `llamawizard restart` | Restart the llama-swap service |
+| `llamawizard warlock` | Live service guardian: rain dashboard (logs, events, RAM/CPU/GPU) with automatic restart |
 | `llamawizard doctor` | Run a standalone health check |
 | `llamawizard logs` | Show recent service logs |
 | `llamawizard models add` | Add a model (interactive) |
@@ -195,6 +196,7 @@ Running `llamawizard` with no arguments walks through every step:
 
 Notes on commands whose behavior isn't obvious from the name alone:
 
+- **`warlock`** polls `launchctl print` every 2 s and issues a kickstart/bootstrap restart within ~2 s of detecting death (retry every 5 s until the service is back); the dashboard shows the last 5 log lines, guardian events, and RAM/CPU metrics — GPU utilization additionally needs cached sudo credentials (`sudo -n powermetrics`) and shows `N/A (sudo required)` otherwise; keys: `q` quit, `r` toggle auto-restart, `a` restart now.
 - **`stop`** unloads the service from launchd via `bootout`, not a plain `kill`. The LaunchAgent plist uses `KeepAlive` with `SuccessfulExit=false`, so a raw kill would just get the process restarted — `bootout` is the correct way to actually stop it.
 - **`doctor`** polls `http://127.0.0.1:<port>/v1/models` with exponential backoff (first attempt immediate, then 2s, 4s, 8s, 16s) and confirms every expected model ID is present. On failure it prints the last 20 lines of the llama-swap error log, and saves the result to `state.json`.
 - **`models remove`** deletes the entry from `state.json`, regenerates the llama-swap config, and restarts the service — but leaves the model file untouched on disk. Use **`models delete`** if you also want the file gone.

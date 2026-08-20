@@ -50,6 +50,9 @@ func main() {
 		case "restart":
 			runRestart()
 			return
+		case "warlock":
+			runWarlock()
+			return
 		case "doctor":
 			runDoctor()
 			return
@@ -158,6 +161,9 @@ SERVICE
   stop                      Stop the llama-swap service
   restart                   Restart the llama-swap service
 
+GUARD
+  warlock                   Live dashboard + auto-restart for the service
+
 MODELS
   models list                        List configured models
   models add                         Add a model (interactive)
@@ -200,6 +206,9 @@ func printCommandHelp(cmd string) {
 		fmt.Println("  -n N  Show last N lines (default 30)")
 	case "start", "stop", "restart":
 		fmt.Printf("llamawizard %s — Manage the llama-swap LaunchAgent service.\n", cmd)
+	case "warlock":
+		fmt.Println("llamawizard warlock — Watch the llama-swap service with a live dashboard; restarts it automatically when it dies.")
+		fmt.Println("  q quit · r toggle auto-restart · a restart now")
 	case "models":
 		fmt.Println("llamawizard models <list|add|show|remove|delete> — Manage models.")
 		fmt.Println("  models list                 List configured models")
