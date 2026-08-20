@@ -1,9 +1,11 @@
 package launchd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"text/template"
 )
@@ -54,12 +56,20 @@ type plistData struct {
 	WorkDir    string
 }
 
+func domainFor(uid int) string {
+	return fmt.Sprintf("gui/%d", uid)
+}
+
 func domain() string {
-	return fmt.Sprintf("gui/%d", os.Getuid())
+	return domainFor(os.Getuid())
+}
+
+func specForLabelWithUID(label string, uid int) string {
+	return domainFor(uid) + "/" + label
 }
 
 func specForLabel(label string) string {
-	return domain() + "/" + label
+	return specForLabelWithUID(label, os.Getuid())
 }
 
 func defaultPlistPath() (string, error) {
@@ -182,17 +192,24 @@ func Uninstall(plistPath string) error {
 	return nil
 }
 
-// Start ensures the service is bootstrapped and running.
+// Start ensures the service is bootstrapped and running in the current
+// user's gui domain.
 //
 // It first attempts a kickstart (which only works on already-bootstrapped
 // services). If that fails, it bootstraps the service to load it fresh.
 func Start(plistPath string) error {
-	return startOrBootstrap(plistPath, ServiceLabel)
+	return StartUID(os.Getuid(), plistPath)
 }
 
-func startOrBootstrap(plistPath, label string) error {
-	spec := specForLabel(label)
-	d := domain()
+// StartUID is Start for the gui domain of uid. Root can kickstart and
+// bootstrap any gui domain; a non-root user can only reach its own.
+func StartUID(uid int, plistPath string) error {
+	return startOrBootstrapWithUID(plistPath, ServiceLabel, uid)
+}
+
+func startOrBootstrapWithUID(plistPath, label string, uid int) error {
+	spec := specForLabelWithUID(label, uid)
+	d := domainFor(uid)
 
 	kickCmd := exec.Command("launchctl", "kickstart", spec)
 	if _, err := kickCmd.CombinedOutput(); err == nil {
@@ -230,13 +247,20 @@ func stopByLabel(label string) error {
 	return nil
 }
 
-// Status returns the output of launchctl print for the service.
+// Status returns the output of launchctl print for the service in the
+// current user's gui domain.
 func Status() (string, error) {
-	return statusByLabel(ServiceLabel)
+	return StatusUID(os.Getuid())
 }
 
-func statusByLabel(label string) (string, error) {
-	spec := specForLabel(label)
+// StatusUID is Status for the gui domain of uid. Root can print any gui
+// domain; a non-root user can only reach its own.
+func StatusUID(uid int) (string, error) {
+	return statusByLabelWithUID(ServiceLabel, uid)
+}
+
+func statusByLabelWithUID(label string, uid int) (string, error) {
+	spec := specForLabelWithUID(label, uid)
 
 	out, err := exec.Command("launchctl", "print", spec).CombinedOutput()
 	if err != nil {
@@ -244,4 +268,25 @@ func statusByLabel(label string) (string, error) {
 	}
 
 	return string(out), nil
+}
+
+// TargetUser returns the user whose llama-swap service this invocation
+// should manage.
+//
+// A non-root caller manages its own service. Root (e.g. via sudo) manages
+// the service of the user who invoked sudo, resolved from SUDO_USER; if
+// SUDO_USER is unset there is no target user to watch.
+func TargetUser() (*user.User, error) {
+	if os.Geteuid() != 0 {
+		return user.Current()
+	}
+	name := os.Getenv("SUDO_USER")
+	if name == "" {
+		return nil, errors.New("running as root but SUDO_USER is not set — run without sudo")
+	}
+	u, err := user.Lookup(name)
+	if err != nil {
+		return nil, fmt.Errorf("looking up SUDO_USER %q: %w", name, err)
+	}
+	return u, nil
 }

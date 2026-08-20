@@ -42,7 +42,7 @@ func runCmd(t *testing.T, cmd tea.Cmd) []tea.Msg {
 func testModel(t *testing.T) Model {
 	t.Helper()
 	plist := t.TempDir() + "/com.local.llama-swap.plist"
-	m := InitialModel(plist, &state.State{Port: 8080}, "v0.1.6")
+	m := InitialModel(plist, t.TempDir(), &state.State{Port: 8080}, "v0.1.6")
 	m.width = 100
 	m.height = 30
 	m.rip.SetSize(rainWidth(m.width), m.height)
@@ -82,7 +82,7 @@ func testModel(t *testing.T) Model {
 }
 
 func TestUIInitialModel(t *testing.T) {
-	m := InitialModel("/tmp/plist.plist", &state.State{Port: 8080}, "v0.1.6")
+	m := InitialModel("/tmp/plist.plist", t.TempDir(), &state.State{Port: 8080}, "v0.1.6")
 	if m.port != 8080 {
 		t.Errorf("port = %d, want 8080", m.port)
 	}
@@ -97,9 +97,27 @@ func TestUIInitialModel(t *testing.T) {
 	}
 
 	// A nil state must not panic and yields port N/A.
-	m2 := InitialModel("/tmp/plist.plist", nil, "dev")
+	m2 := InitialModel("/tmp/plist.plist", t.TempDir(), nil, "dev")
 	if m2.port != 0 {
 		t.Errorf("port = %d, want 0 for nil state", m2.port)
+	}
+}
+
+func TestWatchUID(t *testing.T) {
+	w := InitialModel("/tmp/plist.plist", t.TempDir(), &state.State{Port: 8080}, "v0.1.6")
+	w.WatchUID(501)
+	if w.mon.UID != 501 {
+		t.Errorf("mon.UID = %d, want 501", w.mon.UID)
+	}
+	if w.mon.PlistPath != "/tmp/plist.plist" {
+		t.Errorf("mon.PlistPath = %q, want /tmp/plist.plist", w.mon.PlistPath)
+	}
+
+	w.WatchUser = "eduard"
+	w.width = 100
+	w.height = 30
+	if v := w.View(); !strings.Contains(v, "watching eduard (gui/501)") {
+		t.Errorf("View() missing watching hint\n---\n%s", v)
 	}
 }
 
@@ -145,7 +163,7 @@ func TestUIViewSmallTerminal(t *testing.T) {
 	}
 
 	// Before the first window size message the view must not panic.
-	m2 := InitialModel("/tmp/plist.plist", &state.State{Port: 8080}, "v0.1.6")
+	m2 := InitialModel("/tmp/plist.plist", t.TempDir(), &state.State{Port: 8080}, "v0.1.6")
 	if v := m2.View(); !strings.Contains(v, "terminal too small") {
 		t.Errorf("zero-size view = %q", v)
 	}

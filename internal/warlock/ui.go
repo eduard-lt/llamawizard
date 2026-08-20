@@ -6,9 +6,7 @@ package warlock
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -61,6 +59,8 @@ type Model struct {
 	mon                *Monitor
 	port               int
 	version            string
+	logDir             string
+	WatchUser          string // non-empty when watching another user's service (sudo)
 	logs               []LogLine
 	logSource          string
 	res                Resources
@@ -68,9 +68,10 @@ type Model struct {
 	upSince, downSince time.Time
 }
 
-// InitialModel returns a fresh dashboard for the LaunchAgent at plistPath.
-// st may be nil (first run, no state.json): the port then shows as N/A.
-func InitialModel(plistPath string, st *state.State, version string) Model {
+// InitialModel returns a fresh dashboard for the LaunchAgent at plistPath,
+// tailing logs from logDir. st may be nil (first run, no state.json): the
+// port then shows as N/A.
+func InitialModel(plistPath, logDir string, st *state.State, version string) Model {
 	port := 0
 	if st != nil {
 		port = st.Port
@@ -80,7 +81,14 @@ func InitialModel(plistPath string, st *state.State, version string) Model {
 		mon:     NewMonitor(plistPath),
 		port:    port,
 		version: version,
+		logDir:  logDir,
 	}
+}
+
+// WatchUID re-points the monitor at the gui domain of uid (used when
+// running under sudo to watch the invoking user's service).
+func (m *Model) WatchUID(uid int) {
+	m.mon = NewMonitorFor(m.mon.PlistPath, uid)
 }
 
 // statusResultMsg carries the outcome of one status poll.
@@ -222,12 +230,9 @@ func (m Model) restartCmd() tea.Cmd {
 
 // logPoll fetches the recent log lines in a goroutine and returns them.
 func (m Model) logPoll() tea.Cmd {
+	logDir := m.logDir
 	return func() tea.Msg {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return logResultMsg{}
-		}
-		source, lines := FetchRecentLogs(filepath.Join(home, ".local", "ai", "logs"), 5, time.Now())
+		source, lines := FetchRecentLogs(logDir, 5, time.Now())
 		return logResultMsg{source: source, lines: lines}
 	}
 }
@@ -365,8 +370,11 @@ func (m Model) headerSection(inner int) string {
 	if m.mon.AutoRestart() {
 		auto = "on"
 	}
-	return wlHeaderStyle.Render(title) + "\n" +
-		wlDimStyle.Render("q quit · r auto-restart ["+auto+"] · a restart now")
+	hints := "q quit · r auto-restart [" + auto + "] · a restart now"
+	if m.WatchUser != "" {
+		hints += fmt.Sprintf(" · watching %s (gui/%d)", m.WatchUser, m.mon.UID)
+	}
+	return wlHeaderStyle.Render(title) + "\n" + wlDimStyle.Render(hints)
 }
 
 // serviceSection renders the service state, port, uptime, and auto-restart.

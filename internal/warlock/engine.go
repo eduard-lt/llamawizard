@@ -89,6 +89,7 @@ const restartCooldown = 5 * time.Second
 // monitor with a fake clock and scripted launchd behavior.
 type Monitor struct {
 	PlistPath string
+	UID       int                          // launchd gui-domain uid this monitor watches
 	Start     func(plistPath string) error // default launchd.Start
 	Status    func() (string, error)       // default launchd.Status
 	Now       func() time.Time             // default time.Now
@@ -103,12 +104,28 @@ type Monitor struct {
 	observed        bool
 }
 
-// NewMonitor returns a Monitor for the LaunchAgent at plistPath.
+// NewMonitor returns a Monitor for the LaunchAgent at plistPath in the
+// current user's gui domain.
 func NewMonitor(plistPath string) *Monitor {
 	return &Monitor{
 		PlistPath:   plistPath,
+		UID:         os.Getuid(),
 		Start:       launchd.Start,
 		Status:      launchd.Status,
+		Now:         time.Now,
+		autoRestart: true,
+	}
+}
+
+// NewMonitorFor returns a Monitor for the LaunchAgent at plistPath in the
+// gui domain of uid. Used when running as root (via sudo) to watch the
+// invoking user's service instead of root's.
+func NewMonitorFor(plistPath string, uid int) *Monitor {
+	return &Monitor{
+		PlistPath:   plistPath,
+		UID:         uid,
+		Start:       func(plistPath string) error { return launchd.StartUID(uid, plistPath) },
+		Status:      func() (string, error) { return launchd.StatusUID(uid) },
 		Now:         time.Now,
 		autoRestart: true,
 	}
