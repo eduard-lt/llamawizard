@@ -355,15 +355,22 @@ func coreCount() (int, error) {
 
 // gpuUtilization samples GPU core utilization via powermetrics.
 //
-// It requires cached sudo credentials (sudo -n); any exec error, timeout, or
-// parse failure yields an error so the caller can fall back to
-// gpuUnavailable.
+// Running as root needs no sudo; otherwise it requires cached sudo
+// credentials (sudo -n). Any exec error, timeout, or parse failure yields an
+// error so the caller can fall back to gpuUnavailable.
 func gpuUtilization() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "sudo", "-n", "powermetrics",
-		"--samplers", "gpu_util", "-n", "1", "-i", "2000").Output()
+	var out []byte
+	var err error
+	if os.Geteuid() == 0 {
+		out, err = exec.CommandContext(ctx, "powermetrics",
+			"--samplers", "gpu_util", "-n", "1", "-i", "2000").Output()
+	} else {
+		out, err = exec.CommandContext(ctx, "sudo", "-n", "powermetrics",
+			"--samplers", "gpu_util", "-n", "1", "-i", "2000").Output()
+	}
 	if err != nil {
 		return "", fmt.Errorf("powermetrics: %w", err)
 	}
@@ -371,14 +378,27 @@ func gpuUtilization() (string, error) {
 }
 
 // parseGPUUtil extracts the GPU core utilization percentage from
-// powermetrics output: it finds the line containing "GPU Core Utilization",
-// records its byte offset, and takes the first whitespace-delimited token at
-// (or after) that offset in the first subsequent non-blank line.
+// powermetrics output. Real powermetrics output prefixes every line —
+// including the header — with "date time powermetrics[pid:tid]", so the
+// column position is measured within the header line itself: it finds the
+// line containing "GPU Core Utilization", records the offset of that
+// substring within the line, and takes the first whitespace-delimited token
+// at (or after) that offset in the first subsequent non-blank line. Tokens
+// that don't parse are skipped to tolerate minor format drift; the first
+// token that does parse is the value and must be a percentage in [0, 100]
+// (this also keeps the MHz frequency columns from being mistaken for it).
 func parseGPUUtil(data string) (string, error) {
 	idx := strings.Index(data, "GPU Core Utilization")
 	if idx < 0 {
 		return "", fmt.Errorf("no GPU Core Utilization line in powermetrics output")
 	}
+
+	// Start of the header line: the byte after the preceding newline.
+	headerLineStart := 0
+	if i := strings.LastIndexByte(data[:idx], '\n'); i >= 0 {
+		headerLineStart = i + 1
+	}
+	col := idx - headerLineStart
 
 	// Move past the header line to the start of the next line.
 	nl := strings.IndexByte(data[idx:], '\n')
@@ -398,16 +418,40 @@ func parseGPUUtil(data string) (string, error) {
 			line = data[pos : pos+end]
 		}
 		if strings.TrimSpace(line) != "" {
-			// First whitespace-delimited token at (or after) the header offset.
-			tok := firstTokenAtOrAfter(line, pos, idx)
-			if tok == "" {
-				return "", fmt.Errorf("no value token on GPU utilization line")
+			// Walk the line's whitespace-delimited tokens with their in-line
+			// byte offsets. Tokens before the header column are ignored; a
+			// token at (or after) it that doesn't parse is skipped to tolerate
+			// minor format drift. The first token that does parse is the
+			// value: it must be a percentage in [0, 100].
+			var lastErr error
+			for i := 0; i < len(line); {
+				for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+					i++
+				}
+				if i >= len(line) {
+					break
+				}
+				start := i
+				for i < len(line) && line[i] != ' ' && line[i] != '\t' {
+					i++
+				}
+				if start < col {
+					continue
+				}
+				v, err := strconv.ParseFloat(line[start:i], 64)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if v < 0 || v > 100 {
+					return "", fmt.Errorf("GPU utilization %v out of range [0, 100] on data line %q", v, line)
+				}
+				return fmt.Sprintf("%.0f%%", v), nil
 			}
-			v, err := strconv.ParseFloat(tok, 64)
-			if err != nil {
-				return "", fmt.Errorf("parsing GPU utilization %q: %w", tok, err)
+			if lastErr != nil {
+				return "", fmt.Errorf("no parseable GPU utilization token on data line %q: %w", line, lastErr)
 			}
-			return fmt.Sprintf("%.0f%%", v), nil
+			return "", fmt.Errorf("no parseable GPU utilization token on data line %q", line)
 		}
 		if end < 0 {
 			break
@@ -415,27 +459,4 @@ func parseGPUUtil(data string) (string, error) {
 		pos += end + 1
 	}
 	return "", fmt.Errorf("no data line after GPU Core Utilization header")
-}
-
-// firstTokenAtOrAfter returns the first whitespace-delimited token of line
-// whose absolute offset (lineAbs plus the token's position within line) is at
-// or after off, or "" if there is none.
-func firstTokenAtOrAfter(line string, lineAbs, off int) string {
-	pos := 0
-	for pos < len(line) {
-		for pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
-			pos++
-		}
-		if pos >= len(line) {
-			break
-		}
-		start := pos
-		for pos < len(line) && line[pos] != ' ' && line[pos] != '\t' {
-			pos++
-		}
-		if lineAbs+start >= off {
-			return line[start:pos]
-		}
-	}
-	return ""
 }

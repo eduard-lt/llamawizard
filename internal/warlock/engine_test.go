@@ -297,6 +297,11 @@ func TestFetchRecentLogs_MissingDir(t *testing.T) {
 }
 
 func TestParseGPUUtil(t *testing.T) {
+	// Real powermetrics output prefixes every line — including the header —
+	// with "date time powermetrics[pid:tid]".
+	prefix := "2026-08-19 12:00:02.000 powermetrics[1234:56789]"
+	header := prefix + "     GPU Core Utilization (%)   GPU Max Frequency (MHz)   GPU Idle Frequency (MHz)"
+
 	tests := []struct {
 		name    string
 		in      string
@@ -304,38 +309,33 @@ func TestParseGPUUtil(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "typical output",
-			in:   "2026-08-19 12:00:00.000\n    GPU Core Utilization (%)\n    12\n",
-			want: "12%",
+			name: "real sample",
+			in:   "2026-08-19 12:00:00.000 powermetrics[1234:56789]\n" + header + "\n" + prefix + "     5.2  2496  66\n",
+			want: "5%",
 		},
 		{
-			name: "blank line between header and value",
-			in:   "GPU Core Utilization (%)\n\n    45.6\n",
-			want: "46%",
+			name: "real sample high value",
+			in:   "2026-08-19 12:00:00.000 powermetrics[1234:56789]\n" + header + "\n" + prefix + "     97.3  2496  66\n",
+			want: "97%",
 		},
 		{
-			name: "value with trailing text",
-			in:   "GPU Core Utilization (%)\n    7 8 9\n",
-			want: "7%",
+			name: "blank line between header and data line",
+			in:   "2026-08-19 12:00:00.000 powermetrics[1234:56789]\n" + header + "\n\n" + prefix + "     5.2  2496  66\n",
+			want: "5%",
 		},
 		{
 			name:    "no header",
-			in:      "nothing here\n",
+			in:      "2026-08-19 12:00:00.000 powermetrics[1234:56789]\nnothing here\n",
 			wantErr: true,
 		},
 		{
 			name:    "header only",
-			in:      "GPU Core Utilization (%)\n",
+			in:      "2026-08-19 12:00:00.000 powermetrics[1234:56789]\n" + header + "\n",
 			wantErr: true,
 		},
 		{
-			name:    "header then only blank lines",
-			in:      "GPU Core Utilization (%)\n\n   \n",
-			wantErr: true,
-		},
-		{
-			name:    "non-numeric value",
-			in:      "GPU Core Utilization (%)\n    n/a\n",
+			name:    "non-numeric tokens at and after the column",
+			in:      "2026-08-19 12:00:00.000 powermetrics[1234:56789]\n" + header + "\n" + prefix + "     n/a  2496  66\n",
 			wantErr: true,
 		},
 	}
@@ -353,31 +353,6 @@ func TestParseGPUUtil(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("parseGPUUtil() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestFirstTokenAtOrAfter(t *testing.T) {
-	tests := []struct {
-		name    string
-		line    string
-		lineAbs int
-		off     int
-		want    string
-	}{
-		{"first token qualifies", "    12 34", 100, 50, "12"},
-		{"offset skips first token", "12 34", 0, 2, "34"},
-		{"offset exactly at token start", "12 34", 0, 3, "34"},
-		{"offset at zero", "12 34", 0, 0, "12"},
-		{"offset past all tokens", "12 34", 0, 100, ""},
-		{"empty line", "", 0, 0, ""},
-		{"tabs as separators", "\t9\t10", 0, 0, "9"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := firstTokenAtOrAfter(tt.line, tt.lineAbs, tt.off); got != tt.want {
-				t.Errorf("firstTokenAtOrAfter() = %q, want %q", got, tt.want)
 			}
 		})
 	}
