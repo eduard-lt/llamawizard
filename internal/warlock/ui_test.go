@@ -42,7 +42,7 @@ func runCmd(t *testing.T, cmd tea.Cmd) []tea.Msg {
 func testModel(t *testing.T) Model {
 	t.Helper()
 	plist := t.TempDir() + "/com.local.llama-swap.plist"
-	m := InitialModel(plist, t.TempDir(), &state.State{Port: 8080}, "v0.1.6")
+	m := InitialModel(plist, &state.State{Port: 8080}, "v0.1.6")
 	m.width = 100
 	m.height = 30
 	m.rip.SetSize(m.width, m.height)
@@ -72,17 +72,12 @@ func testModel(t *testing.T) Model {
 	m.res = Resources{
 		RAMTotal: 36 << 30,
 		RAMFree:  14 << 30, // 14.0 GiB free → 22.0 GiB used
-		Load1:    3.43,
-		Cores:    18,
-		GPUModel: "Apple M5 Pro",
-		GPUUtil:  "N/A (sudo required)",
 	}
-	m.gpuModel = "Apple M5 Pro"
 	return m
 }
 
 func TestUIInitialModel(t *testing.T) {
-	m := InitialModel("/tmp/plist.plist", t.TempDir(), &state.State{Port: 8080}, "v0.1.6")
+	m := InitialModel("/tmp/plist.plist", &state.State{Port: 8080}, "v0.1.6")
 	if m.port != 8080 {
 		t.Errorf("port = %d, want 8080", m.port)
 	}
@@ -97,27 +92,9 @@ func TestUIInitialModel(t *testing.T) {
 	}
 
 	// A nil state must not panic and yields port N/A.
-	m2 := InitialModel("/tmp/plist.plist", t.TempDir(), nil, "dev")
+	m2 := InitialModel("/tmp/plist.plist", nil, "dev")
 	if m2.port != 0 {
 		t.Errorf("port = %d, want 0 for nil state", m2.port)
-	}
-}
-
-func TestWatchUID(t *testing.T) {
-	w := InitialModel("/tmp/plist.plist", t.TempDir(), &state.State{Port: 8080}, "v0.1.6")
-	w.WatchUID(501)
-	if w.mon.UID != 501 {
-		t.Errorf("mon.UID = %d, want 501", w.mon.UID)
-	}
-	if w.mon.PlistPath != "/tmp/plist.plist" {
-		t.Errorf("mon.PlistPath = %q, want /tmp/plist.plist", w.mon.PlistPath)
-	}
-
-	w.WatchUser = "eduard"
-	w.width = 100
-	w.height = 30
-	if v := w.View(); !strings.Contains(v, "watching eduard (gui/501)") {
-		t.Errorf("View() missing watching hint\n---\n%s", v)
 	}
 }
 
@@ -133,9 +110,7 @@ func TestUIView(t *testing.T) {
 		"stdout",
 		"EVENTS",
 		"RESOURCES",
-		"Apple M5 Pro",
 		"22.0 / 36.0 GiB",
-		"load 3.43 (18c)",
 		"up since 21:42:05",
 		// Event messages are truncated to the panel width; assert stable prefixes.
 		"detected death: print: exit",
@@ -234,7 +209,7 @@ func TestUIViewSmallTerminal(t *testing.T) {
 	}
 
 	// Before the first window size message the view must not panic.
-	m2 := InitialModel("/tmp/plist.plist", t.TempDir(), &state.State{Port: 8080}, "v0.1.6")
+	m2 := InitialModel("/tmp/plist.plist", &state.State{Port: 8080}, "v0.1.6")
 	if v := m2.View(); !strings.Contains(v, "terminal too small") {
 		t.Errorf("zero-size view = %q", v)
 	}
@@ -381,17 +356,12 @@ func TestUIPollResults(t *testing.T) {
 		t.Errorf("logs = (%q, %+v)", m.logSource, m.logs)
 	}
 
-	m, cmd = update(m, resResultMsg{res: Resources{RAMTotal: 1 << 30, Cores: 4}})
+	m, cmd = update(m, resResultMsg{res: Resources{RAMTotal: 1 << 30}})
 	if cmd == nil {
 		t.Error("resource result should reschedule the resource poll")
 	}
-	if m.res.RAMTotal != 1<<30 || m.res.Cores != 4 {
+	if m.res.RAMTotal != 1<<30 {
 		t.Errorf("res = %+v", m.res)
-	}
-
-	m, _ = update(m, gpuModelMsg{model: "Apple M5 Pro"})
-	if m.gpuModel != "Apple M5 Pro" {
-		t.Errorf("gpuModel = %q", m.gpuModel)
 	}
 
 	m, cmd = update(m, ripple.TickMsg{})

@@ -296,89 +296,14 @@ func TestFetchRecentLogs_MissingDir(t *testing.T) {
 	}
 }
 
-func TestParseGPUUtil(t *testing.T) {
-	// Real powermetrics output prefixes every line — including the header —
-	// with "date time powermetrics[pid:tid]".
-	prefix := "2026-08-19 12:00:02.000 powermetrics[1234:56789]"
-	header := prefix + "     GPU Core Utilization (%)   GPU Max Frequency (MHz)   GPU Idle Frequency (MHz)"
-
-	tests := []struct {
-		name    string
-		in      string
-		want    string
-		wantErr bool
-	}{
-		{
-			name: "real sample",
-			in:   "2026-08-19 12:00:00.000 powermetrics[1234:56789]\n" + header + "\n" + prefix + "     5.2  2496  66\n",
-			want: "5%",
-		},
-		{
-			name: "real sample high value",
-			in:   "2026-08-19 12:00:00.000 powermetrics[1234:56789]\n" + header + "\n" + prefix + "     97.3  2496  66\n",
-			want: "97%",
-		},
-		{
-			name: "blank line between header and data line",
-			in:   "2026-08-19 12:00:00.000 powermetrics[1234:56789]\n" + header + "\n\n" + prefix + "     5.2  2496  66\n",
-			want: "5%",
-		},
-		{
-			name:    "no header",
-			in:      "2026-08-19 12:00:00.000 powermetrics[1234:56789]\nnothing here\n",
-			wantErr: true,
-		},
-		{
-			name:    "header only",
-			in:      "2026-08-19 12:00:00.000 powermetrics[1234:56789]\n" + header + "\n",
-			wantErr: true,
-		},
-		{
-			name:    "non-numeric tokens at and after the column",
-			in:      "2026-08-19 12:00:00.000 powermetrics[1234:56789]\n" + header + "\n" + prefix + "     n/a  2496  66\n",
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseGPUUtil(tt.in)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("parseGPUUtil() = %q, want error", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("parseGPUUtil() error: %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("parseGPUUtil() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestSnapshotResources(t *testing.T) {
-	r := SnapshotResources("Apple M5 Pro")
+	r := SnapshotResources()
 
-	if r.GPUModel != "Apple M5 Pro" {
-		t.Errorf("GPUModel = %q", r.GPUModel)
-	}
 	if r.RAMTotal == 0 {
 		t.Error("RAMTotal should be > 0")
 	}
-	if r.Cores == 0 {
-		t.Error("Cores should be > 0")
+	if r.RAMFree > r.RAMTotal {
+		t.Errorf("RAMFree = %d, want <= RAMTotal %d", r.RAMFree, r.RAMTotal)
 	}
-	if r.Load1 < 0 {
-		t.Errorf("Load1 = %v, want >= 0", r.Load1)
-	}
-	if r.GPUUtil == "" {
-		t.Error("GPUUtil should not be empty")
-	}
-	if !strings.HasSuffix(r.GPUUtil, "%") && r.GPUUtil != "N/A (sudo required)" {
-		t.Errorf("GPUUtil = %q, want a %% value or N/A (sudo required)", r.GPUUtil)
-	}
-	t.Logf("RAMTotal=%d RAMFree=%d Load1=%.2f Cores=%d GPU=%s %s",
-		r.RAMTotal, r.RAMFree, r.Load1, r.Cores, r.GPUModel, r.GPUUtil)
+	t.Logf("RAMTotal=%d RAMFree=%d", r.RAMTotal, r.RAMFree)
 }

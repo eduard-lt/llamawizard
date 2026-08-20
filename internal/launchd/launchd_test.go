@@ -1,7 +1,6 @@
 package launchd
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,31 +20,6 @@ func TestSpecForLabel(t *testing.T) {
 	want := d + "/com.test.foo"
 	if s != want {
 		t.Errorf("specForLabel = %q, want %q", s, want)
-	}
-}
-
-func TestSpecForLabelWithUID(t *testing.T) {
-	if got := specForLabelWithUID("com.local.llama-swap", 501); got != "gui/501/com.local.llama-swap" {
-		t.Errorf("specForLabelWithUID = %q, want gui/501/com.local.llama-swap", got)
-	}
-	if got := domainFor(0); got != "gui/0" {
-		t.Errorf("domainFor(0) = %q, want gui/0", got)
-	}
-}
-
-func TestTargetUser_NotRoot(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("test runs as root; SUDO_USER path is covered manually")
-	}
-	u, err := TargetUser()
-	if err != nil {
-		t.Fatalf("TargetUser() error: %v", err)
-	}
-	if u == nil {
-		t.Fatal("TargetUser() returned nil user")
-	}
-	if u.Uid != fmt.Sprintf("%d", os.Getuid()) {
-		t.Errorf("u.Uid = %q, want %q", u.Uid, fmt.Sprintf("%d", os.Getuid()))
 	}
 }
 
@@ -193,7 +167,7 @@ func TestStop_NotInstalledIsError(t *testing.T) {
 }
 
 func TestStatus_NotInstalledIsError(t *testing.T) {
-	_, err := statusByLabelWithUID("com.local.llamawizard-test-nonexistent", os.Getuid())
+	_, err := statusByLabel("com.local.llamawizard-test-nonexistent")
 	if err == nil {
 		t.Error("Status on nonexistent service should return an error")
 	}
@@ -253,7 +227,7 @@ func TestLifecycle_RoundTrip(t *testing.T) {
 	})
 
 	t.Run("status-after-install", func(t *testing.T) {
-		out, err := statusByLabelWithUID(testLabel, os.Getuid())
+		out, err := statusByLabel(testLabel)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -264,14 +238,14 @@ func TestLifecycle_RoundTrip(t *testing.T) {
 	})
 
 	t.Run("state-is-running", func(t *testing.T) {
-		out, _ := statusByLabelWithUID(testLabel, os.Getuid())
+		out, _ := statusByLabel(testLabel)
 		if out == "" || !strings.Contains(out, "running") {
 			t.Skip("state may use different terminology across macOS versions")
 		}
 	})
 
 	t.Run("start-on-already-running", func(t *testing.T) {
-		if err := startOrBootstrapWithUID(plistPath, testLabel, os.Getuid()); err != nil {
+		if err := startOrBootstrap(plistPath, testLabel); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -283,18 +257,18 @@ func TestLifecycle_RoundTrip(t *testing.T) {
 	})
 
 	t.Run("status-after-stop", func(t *testing.T) {
-		_, err := statusByLabelWithUID(testLabel, os.Getuid())
+		_, err := statusByLabel(testLabel)
 		if err == nil {
 			t.Error("status after stop should return an error for an unloaded service")
 		}
 	})
 
 	t.Run("restart-after-stop", func(t *testing.T) {
-		if err := startOrBootstrapWithUID(plistPath, testLabel, os.Getuid()); err != nil {
+		if err := startOrBootstrap(plistPath, testLabel); err != nil {
 			t.Fatal(err)
 		}
 
-		out, err := statusByLabelWithUID(testLabel, os.Getuid())
+		out, err := statusByLabel(testLabel)
 		if err != nil {
 			t.Fatal(err)
 		}

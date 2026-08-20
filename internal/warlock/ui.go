@@ -8,7 +8,8 @@ package warlock
 
 import (
 	"fmt"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -51,19 +52,15 @@ type Model struct {
 	mon                *Monitor
 	port               int
 	version            string
-	logDir             string
-	WatchUser          string // non-empty when watching another user's service (sudo)
 	logs               []LogLine
 	logSource          string
 	res                Resources
-	gpuModel           string
 	upSince, downSince time.Time
 }
 
-// InitialModel returns a fresh dashboard for the LaunchAgent at plistPath,
-// tailing logs from logDir. st may be nil (first run, no state.json): the
-// port then shows as N/A.
-func InitialModel(plistPath, logDir string, st *state.State, version string) Model {
+// InitialModel returns a fresh dashboard for the LaunchAgent at plistPath.
+// st may be nil (first run, no state.json): the port then shows as N/A.
+func InitialModel(plistPath string, st *state.State, version string) Model {
 	port := 0
 	if st != nil {
 		port = st.Port
@@ -73,14 +70,7 @@ func InitialModel(plistPath, logDir string, st *state.State, version string) Mod
 		mon:     NewMonitor(plistPath),
 		port:    port,
 		version: version,
-		logDir:  logDir,
 	}
-}
-
-// WatchUID re-points the monitor at the gui domain of uid (used when
-// running under sudo to watch the invoking user's service).
-func (m *Model) WatchUID(uid int) {
-	m.mon = NewMonitorFor(m.mon.PlistPath, uid)
 }
 
 // statusResultMsg carries the outcome of one status poll.
@@ -105,11 +95,6 @@ type resResultMsg struct {
 	res Resources
 }
 
-// gpuModelMsg carries the one-time GPU model lookup result.
-type gpuModelMsg struct {
-	model string
-}
-
 // Init starts the rain animation and all the polls.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
@@ -117,7 +102,6 @@ func (m Model) Init() tea.Cmd {
 		m.statusPoll(),
 		m.logPoll(),
 		m.resPoll(),
-		gpuModelCmd(),
 	)
 }
 
@@ -163,10 +147,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case resResultMsg:
 		m.res = msg.res
 		return m, m.resPoll()
-
-	case gpuModelMsg:
-		m.gpuModel = msg.model
-		return m, nil
 	}
 	return m, nil
 }
@@ -222,42 +202,21 @@ func (m Model) restartCmd() tea.Cmd {
 
 // logPoll fetches the recent log lines in a goroutine and returns them.
 func (m Model) logPoll() tea.Cmd {
-	logDir := m.logDir
 	return func() tea.Msg {
-		source, lines := FetchRecentLogs(logDir, 5, time.Now())
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return logResultMsg{}
+		}
+		source, lines := FetchRecentLogs(filepath.Join(home, ".local", "ai", "logs"), 5, time.Now())
 		return logResultMsg{source: source, lines: lines}
 	}
 }
 
 // resPoll snapshots machine resources in a goroutine and returns them.
 func (m Model) resPoll() tea.Cmd {
-	gpuModel := m.gpuModel
 	return func() tea.Msg {
-		return resResultMsg{res: SnapshotResources(gpuModel)}
+		return resResultMsg{res: SnapshotResources()}
 	}
-}
-
-// gpuModelCmd looks up the GPU chipset model once at startup.
-func gpuModelCmd() tea.Cmd {
-	return func() tea.Msg {
-		return gpuModelMsg{model: fetchGPUModel()}
-	}
-}
-
-// fetchGPUModel reads the chipset model from system_profiler, or "" on any
-// failure.
-func fetchGPUModel() string {
-	out, err := exec.Command("system_profiler", "SPDisplaysDataType").Output()
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Chipset Model:") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "Chipset Model:"))
-		}
-	}
-	return ""
 }
 
 // stateLine returns the "state = …" line from a launchctl print dump, or "".
@@ -322,9 +281,6 @@ func (m Model) panelLines() []sline {
 		title += " v" + strings.TrimPrefix(m.version, "v")
 	}
 	hints := "q quit · r auto-restart [" + auto + "] · a restart now"
-	if m.WatchUser != "" {
-		hints += fmt.Sprintf(" · watching %s (gui/%d)", m.WatchUser, m.mon.UID)
-	}
 	out = append(out,
 		line(seg{truncate(title, bw), wlAccent}),
 		line(seg{hints, wlDim}),
@@ -403,7 +359,7 @@ func (m Model) panelLines() []sline {
 	}
 	out = append(out, rule)
 
-	// Resources: RAM, CPU, GPU.
+	// Resources: RAM.
 	out = append(out, line(seg{"RESOURCES", wlDim}))
 	ram := "N/A"
 	if m.res.RAMTotal > 0 {
@@ -412,16 +368,6 @@ func (m Model) panelLines() []sline {
 		ram = fmt.Sprintf("%.1f / %.1f GiB", used, total)
 	}
 	out = append(out, line(seg{"  RAM   ", wlDim}, seg{ram, wlPlain}))
-	cpu := "N/A"
-	if m.res.Cores > 0 {
-		cpu = fmt.Sprintf("load %.2f (%dc)", m.res.Load1, m.res.Cores)
-	}
-	out = append(out, line(seg{"  CPU   ", wlDim}, seg{cpu, wlPlain}))
-	gpu := m.res.GPUModel
-	if gpu == "" {
-		gpu = "N/A"
-	}
-	out = append(out, line(seg{"  GPU   ", wlDim}, seg{gpu + " · " + m.res.GPUUtil, wlPlain}))
 	return out
 }
 
@@ -443,9 +389,8 @@ func eventIcon(kind string) (string, string) {
 
 // toBlock expands the panel lines into a grid of cells: each segment's
 // runes take the segment's foreground; short lines are padded with zero
-// (transparent) cells up to bw. Lines longer than bw (only the key-hint
-// line with a watching suffix can be) keep their full length and simply
-// extend into the rain margin.
+// (transparent) cells up to bw. Lines longer than bw keep their full
+// length and simply extend into the rain margin.
 func toBlock(lines []sline, bw int) [][]cell {
 	block := make([][]cell, len(lines))
 	for y, l := range lines {

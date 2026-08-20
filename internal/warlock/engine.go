@@ -5,14 +5,11 @@
 package warlock
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -89,7 +86,6 @@ const restartCooldown = 5 * time.Second
 // monitor with a fake clock and scripted launchd behavior.
 type Monitor struct {
 	PlistPath string
-	UID       int                          // launchd gui-domain uid this monitor watches
 	Start     func(plistPath string) error // default launchd.Start
 	Status    func() (string, error)       // default launchd.Status
 	Now       func() time.Time             // default time.Now
@@ -109,23 +105,8 @@ type Monitor struct {
 func NewMonitor(plistPath string) *Monitor {
 	return &Monitor{
 		PlistPath:   plistPath,
-		UID:         os.Getuid(),
 		Start:       launchd.Start,
 		Status:      launchd.Status,
-		Now:         time.Now,
-		autoRestart: true,
-	}
-}
-
-// NewMonitorFor returns a Monitor for the LaunchAgent at plistPath in the
-// gui domain of uid. Used when running as root (via sudo) to watch the
-// invoking user's service instead of root's.
-func NewMonitorFor(plistPath string, uid int) *Monitor {
-	return &Monitor{
-		PlistPath:   plistPath,
-		UID:         uid,
-		Start:       func(plistPath string) error { return launchd.StartUID(uid, plistPath) },
-		Status:      func() (string, error) { return launchd.StatusUID(uid) },
 		Now:         time.Now,
 		autoRestart: true,
 	}
@@ -304,176 +285,18 @@ func FetchRecentLogs(logDir string, n int, now time.Time) (string, []LogLine) {
 type Resources struct {
 	RAMTotal uint64
 	RAMFree  uint64
-	Load1    float64
-	Cores    int
-	GPUModel string
-	GPUUtil  string // e.g. "12%" or "N/A (sudo required)"
 }
 
-// gpuUnavailable is the GPUUtil value when utilization cannot be read.
-const gpuUnavailable = "N/A (sudo required)"
-
-// SnapshotResources samples RAM, CPU load, core count, and GPU utilization.
+// SnapshotResources samples machine RAM.
 //
-// It never returns an error: individual failures yield zero values or
-// gpuUnavailable. gpuModel is passed in (the TUI fetches it once via
-// system_profiler).
-func SnapshotResources(gpuModel string) Resources {
-	r := Resources{GPUModel: gpuModel, GPUUtil: gpuUnavailable}
-
+// It never returns an error: individual failures yield zero values.
+func SnapshotResources() Resources {
+	var r Resources
 	if total, err := hardware.TotalRAM(); err == nil {
 		r.RAMTotal = total
 	}
 	if free, err := hardware.AvailableRAM(); err == nil {
 		r.RAMFree = free
 	}
-	if load, err := loadAverage(); err == nil {
-		r.Load1 = load
-	}
-	if cores, err := coreCount(); err == nil {
-		r.Cores = cores
-	}
-	if util, err := gpuUtilization(); err == nil {
-		r.GPUUtil = util
-	}
 	return r
-}
-
-// loadAverage reads the 1-minute load average from sysctl vm.loadavg.
-//
-// The output looks like "{ 3.43 3.97 3.62 }"; the first parseable float is
-// returned.
-func loadAverage() (float64, error) {
-	out, err := exec.Command("sysctl", "-n", "vm.loadavg").Output()
-	if err != nil {
-		return 0, fmt.Errorf("sysctl vm.loadavg: %w", err)
-	}
-	for _, f := range strings.Fields(string(out)) {
-		v, err := strconv.ParseFloat(f, 64)
-		if err == nil {
-			return v, nil
-		}
-	}
-	return 0, fmt.Errorf("parsing load average from %q", string(out))
-}
-
-// coreCount reads the logical CPU count from sysctl hw.ncpu.
-func coreCount() (int, error) {
-	out, err := exec.Command("sysctl", "-n", "hw.ncpu").Output()
-	if err != nil {
-		return 0, fmt.Errorf("sysctl hw.ncpu: %w", err)
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil {
-		return 0, fmt.Errorf("parsing hw.ncpu %q: %w", string(out), err)
-	}
-	return n, nil
-}
-
-// gpuUtilization samples GPU core utilization via powermetrics.
-//
-// Running as root needs no sudo; otherwise it requires cached sudo
-// credentials (sudo -n). Any exec error, timeout, or parse failure yields an
-// error so the caller can fall back to gpuUnavailable.
-func gpuUtilization() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-
-	var out []byte
-	var err error
-	if os.Geteuid() == 0 {
-		out, err = exec.CommandContext(ctx, "powermetrics",
-			"--samplers", "gpu_util", "-n", "1", "-i", "2000").Output()
-	} else {
-		out, err = exec.CommandContext(ctx, "sudo", "-n", "powermetrics",
-			"--samplers", "gpu_util", "-n", "1", "-i", "2000").Output()
-	}
-	if err != nil {
-		return "", fmt.Errorf("powermetrics: %w", err)
-	}
-	return parseGPUUtil(string(out))
-}
-
-// parseGPUUtil extracts the GPU core utilization percentage from
-// powermetrics output. Real powermetrics output prefixes every line —
-// including the header — with "date time powermetrics[pid:tid]", so the
-// column position is measured within the header line itself: it finds the
-// line containing "GPU Core Utilization", records the offset of that
-// substring within the line, and takes the first whitespace-delimited token
-// at (or after) that offset in the first subsequent non-blank line. Tokens
-// that don't parse are skipped to tolerate minor format drift; the first
-// token that does parse is the value and must be a percentage in [0, 100]
-// (this also keeps the MHz frequency columns from being mistaken for it).
-func parseGPUUtil(data string) (string, error) {
-	idx := strings.Index(data, "GPU Core Utilization")
-	if idx < 0 {
-		return "", fmt.Errorf("no GPU Core Utilization line in powermetrics output")
-	}
-
-	// Start of the header line: the byte after the preceding newline.
-	headerLineStart := 0
-	if i := strings.LastIndexByte(data[:idx], '\n'); i >= 0 {
-		headerLineStart = i + 1
-	}
-	col := idx - headerLineStart
-
-	// Move past the header line to the start of the next line.
-	nl := strings.IndexByte(data[idx:], '\n')
-	if nl < 0 {
-		return "", fmt.Errorf("no data line after GPU Core Utilization header")
-	}
-	pos := idx + nl + 1
-
-	// Walk the subsequent lines; the first non-blank one holds the value. pos
-	// tracks the absolute offset of the current line in data.
-	for pos < len(data) {
-		end := strings.IndexByte(data[pos:], '\n')
-		var line string
-		if end < 0 {
-			line = data[pos:]
-		} else {
-			line = data[pos : pos+end]
-		}
-		if strings.TrimSpace(line) != "" {
-			// Walk the line's whitespace-delimited tokens with their in-line
-			// byte offsets. Tokens before the header column are ignored; a
-			// token at (or after) it that doesn't parse is skipped to tolerate
-			// minor format drift. The first token that does parse is the
-			// value: it must be a percentage in [0, 100].
-			var lastErr error
-			for i := 0; i < len(line); {
-				for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
-					i++
-				}
-				if i >= len(line) {
-					break
-				}
-				start := i
-				for i < len(line) && line[i] != ' ' && line[i] != '\t' {
-					i++
-				}
-				if start < col {
-					continue
-				}
-				v, err := strconv.ParseFloat(line[start:i], 64)
-				if err != nil {
-					lastErr = err
-					continue
-				}
-				if v < 0 || v > 100 {
-					return "", fmt.Errorf("GPU utilization %v out of range [0, 100] on data line %q", v, line)
-				}
-				return fmt.Sprintf("%.0f%%", v), nil
-			}
-			if lastErr != nil {
-				return "", fmt.Errorf("no parseable GPU utilization token on data line %q: %w", line, lastErr)
-			}
-			return "", fmt.Errorf("no parseable GPU utilization token on data line %q", line)
-		}
-		if end < 0 {
-			break
-		}
-		pos += end + 1
-	}
-	return "", fmt.Errorf("no data line after GPU Core Utilization header")
 }

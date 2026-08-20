@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -139,40 +138,23 @@ func runRestart() {
 }
 
 func runWarlock() {
-	// Under sudo the service lives in the invoking user's gui domain, not
-	// root's: resolve the target user first and derive the plist, state,
-	// and log paths from that user's home directory.
-	u, err := launchd.TargetUser()
+	plistPath, err := defaultPlistPath()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	home := u.HomeDir
-	plistPath := filepath.Join(home, "Library", "LaunchAgents", launchd.PlistName)
 	if _, err := os.Stat(plistPath); os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "No LaunchAgent found at %s. Run 'llamawizard' (setup) first.\n", plistPath)
 		os.Exit(1)
 	}
 
-	st, err := state.Load(filepath.Join(home, ".local", "ai", "state.json"))
+	st, err := state.Load("")
 	if err != nil {
 		st = &state.State{} // port display only — never fail hard
 	}
 
-	w := warlock.InitialModel(plistPath, filepath.Join(home, ".local", "ai", "logs"), st, version)
-	w.WatchUID(uid) // no-op behaviorally for the current user
-	if os.Geteuid() == 0 {
-		w.WatchUser = u.Username
-	}
-
-	p := tea.NewProgram(w, tea.WithAltScreen())
+	p := tea.NewProgram(warlock.InitialModel(plistPath, st, version), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
