@@ -1,8 +1,10 @@
 package warlock
 
-// The Bubble Tea dashboard for `llamawizard warlock`: the ripple "rain" in
-// the left pane, a live info panel beside it. The engine (engine.go) stays
-// TUI-free; this file is the only place in the package that touches tea.
+// The Bubble Tea dashboard for `llamawizard warlock`: the ripple "rain"
+// across the whole terminal with a live stats block centered over it, rain
+// showing through the block's spaces — the wizard welcome screen look. The
+// engine (engine.go) stays TUI-free; this file is the only place in the
+// package that touches tea.
 
 import (
 	"fmt"
@@ -30,29 +32,19 @@ const (
 	minHeight = 24
 )
 
-// ANSI colors for the rain, matching the wizard welcome screen.
+// ANSI palette, matching the wizard welcome screen.
 const (
-	rainBlueFG = "\x1b[34m"
-	rainReset  = "\x1b[0m"
+	wlRain   = "\x1b[34m"   // base rain blue
+	wlPlain  = "\x1b[0m"    // terminal default fg — log/event text
+	wlDim    = "\x1b[2m"    // labels, observed timestamps, rules, hints
+	wlOK     = "\x1b[32m"   // running / recovered / auto-restart on
+	wlWarn   = "\x1b[33m"   // not running / recovering… / death
+	wlErr    = "\x1b[31m"   // not loaded / unknown / failed
+	wlAccent = "\x1b[1;35m" // bold magenta title
 )
 
-// Palette, mirroring the wizard's adaptive colors.
-var (
-	wlAccent = lipgloss.AdaptiveColor{Light: "200", Dark: "205"}
-	wlMuted  = lipgloss.AdaptiveColor{Light: "240", Dark: "243"}
-	wlErr    = lipgloss.AdaptiveColor{Light: "160", Dark: "196"}
-	wlOK     = lipgloss.AdaptiveColor{Light: "28", Dark: "46"}
-	wlWarn   = lipgloss.AdaptiveColor{Light: "172", Dark: "214"}
-
-	wlHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(wlAccent)
-	wlDimStyle    = lipgloss.NewStyle().Foreground(wlMuted)
-	wlOKStyle     = lipgloss.NewStyle().Foreground(wlOK)
-	wlWarnStyle   = lipgloss.NewStyle().Foreground(wlWarn)
-	wlErrStyle    = lipgloss.NewStyle().Foreground(wlErr)
-	wlBoxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2)
-)
-
-// Model is the warlock dashboard: rain on the left, info panel on the right.
+// Model is the warlock dashboard: rain across the terminal, stats block
+// centered over it.
 type Model struct {
 	width, height      int
 	rip                ripple.Model
@@ -148,7 +140,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.rip.SetSize(rainWidth(m.width), m.height)
+		m.rip.SetSize(m.width, m.height)
 		return m, nil
 
 	case ripple.TickMsg:
@@ -278,231 +270,265 @@ func stateLine(out string) string {
 	return ""
 }
 
-// rainWidth is the width of the left rain pane.
-func rainWidth(total int) int {
-	w := total / 2
-	if w < 24 {
-		w = 24
+// cell is one terminal cell of the stats block: a rune plus the ANSI
+// foreground code to render it with. A zero rune (or a space) is
+// transparent — the rain shows through.
+type cell struct{ r rune; fg string }
+
+// seg is a run of text in one foreground color.
+type seg struct {
+	text string
+	fg   string
+}
+
+// sline is one line of the stats block: a list of styled segments.
+type sline struct{ segs []seg }
+
+// line builds an sline from its styled segments.
+func line(segs ...seg) sline { return sline{segs: segs} }
+
+// blockWidth is the stats block width for a terminal of total width: the
+// terminal minus 8 columns of rain margin, capped at 64, floored at 40.
+func blockWidth(total int) int {
+	w := total - 8
+	if w > 64 {
+		w = 64
+	}
+	if w < 40 {
+		w = 40
 	}
 	return w
 }
 
-// View renders the dashboard: rain on the left, info panel on the right.
-func (m Model) View() string {
-	if m.width < minWidth || m.height < minHeight {
-		msg := wlDimStyle.Render("terminal too small — resize to at least 80x24")
-		if m.width > 0 && m.height > 0 {
-			return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, msg)
-		}
-		return msg
-	}
-	rainW := rainWidth(m.width)
-	return lipgloss.JoinHorizontal(lipgloss.Top, m.rainView(rainW), m.panelView(rainW))
-}
+// panelLines rebuilds the dashboard's five sections — header, service,
+// logs, events, resources — as lines of styled segments, separated by dim
+// rules spanning the block width.
+func (m Model) panelLines() []sline {
+	bw := blockWidth(m.width)
+	rule := line(seg{strings.Repeat("─", bw), wlDim})
 
-// rainView renders the rain field cell by cell, each row in blue foreground
-// exactly like the wizard welcome screen.
-func (m Model) rainView(rainW int) string {
-	field := m.rip.Chars(rainW, m.height)
-	var sb strings.Builder
-	for y := 0; y < m.height; y++ {
-		sb.WriteString(rainBlueFG)
-		for x := 0; x < rainW; x++ {
-			sb.WriteRune(field[y][x])
-		}
-		sb.WriteString(rainReset)
-		if y < m.height-1 {
-			sb.WriteByte('\n')
-		}
-	}
-	return sb.String()
-}
-
-// panelView renders the right-hand info panel: a rounded box with the
-// header, service, logs, events, and resources sections.
-func (m Model) panelView(rainW int) string {
-	inner := m.width - rainW - 2 - 6 // box border (2) + horizontal padding (4)
-	if inner < 20 {
-		inner = 20
+	auto := "off"
+	autoFG := wlDim
+	if m.mon.AutoRestart() {
+		auto = "on"
+		autoFG = wlOK
 	}
 
-	sections := []string{
-		m.headerSection(inner),
-		m.serviceSection(),
-		m.logsSection(inner),
-		m.eventsSection(inner),
-		m.resourcesSection(),
-	}
+	var out []sline
 
-	// The dim rule spans the widest content line so the box never stretches
-	// beyond its intended width.
-	ruleW := inner
-	for _, s := range sections {
-		for _, line := range strings.Split(s, "\n") {
-			if w := lipgloss.Width(line); w > ruleW {
-				ruleW = w
-			}
-		}
-	}
-	rule := wlDimStyle.Render(strings.Repeat("─", ruleW))
-
-	var sb strings.Builder
-	for i, s := range sections {
-		if i > 0 {
-			sb.WriteString("\n")
-			sb.WriteString(rule)
-			sb.WriteString("\n")
-		}
-		sb.WriteString(s)
-	}
-
-	return wlBoxStyle.Width(m.width - rainW - 2).Render(sb.String())
-}
-
-// headerSection renders the title and the key hints.
-func (m Model) headerSection(inner int) string {
+	// Header: title + key hints.
 	title := "llamawarlock"
 	if m.version != "" {
 		title += " v" + strings.TrimPrefix(m.version, "v")
-	}
-	title = truncate(title, inner)
-	auto := "off"
-	if m.mon.AutoRestart() {
-		auto = "on"
 	}
 	hints := "q quit · r auto-restart [" + auto + "] · a restart now"
 	if m.WatchUser != "" {
 		hints += fmt.Sprintf(" · watching %s (gui/%d)", m.WatchUser, m.mon.UID)
 	}
-	return wlHeaderStyle.Render(title) + "\n" + wlDimStyle.Render(hints)
-}
+	out = append(out,
+		line(seg{truncate(title, bw), wlAccent}),
+		line(seg{hints, wlDim}),
+		rule,
+	)
 
-// serviceSection renders the service state, port, uptime, and auto-restart.
-func (m Model) serviceSection() string {
+	// Service: state, port, up/down since, auto-restart.
 	s := m.mon.State()
 	stateWord := s.String()
-	var stateStyle lipgloss.Style
+	var stateFG string
 	switch s {
 	case StateRunning:
-		stateStyle = wlOKStyle
+		stateFG = wlOK
 	case StateNotLoaded, StateUnknown:
-		stateStyle = wlErrStyle
+		stateFG = wlErr
 	default:
-		stateStyle = wlWarnStyle
+		stateFG = wlWarn
 	}
-
 	port := fmt.Sprintf("port %d", m.port)
 	if m.port == 0 {
 		port = "port N/A"
 	}
-
-	line1 := "SERVICE   " + stateStyle.Render("● "+stateWord)
+	svc := []seg{{"SERVICE   ", wlDim}, {"● " + stateWord, stateFG}}
 	if s != StateRunning && m.mon.AutoRestart() {
-		line1 += " · " + wlWarnStyle.Render("recovering…")
+		svc = append(svc, seg{" · ", wlDim}, seg{"recovering…", wlWarn})
 	}
-	line1 += " · " + port
-
-	var line2 string
+	svc = append(svc, seg{" · ", wlDim}, seg{port, wlPlain})
+	out = append(out, line(svc...))
 	switch {
 	case s == StateRunning && !m.upSince.IsZero():
-		line2 = "up since " + m.upSince.Format("15:04:05")
+		out = append(out, line(seg{"up since " + m.upSince.Format("15:04:05"), wlPlain}))
 	case s != StateRunning && !m.downSince.IsZero():
-		line2 = "down since " + m.downSince.Format("15:04:05")
+		out = append(out, line(seg{"down since " + m.downSince.Format("15:04:05"), wlPlain}))
 	}
+	out = append(out, line(seg{"auto-restart ", wlDim}, seg{auto, autoFG}), rule)
 
-	auto := "off"
-	autoStyle := wlDimStyle
-	if m.mon.AutoRestart() {
-		auto = "on"
-		autoStyle = wlOKStyle
-	}
-	line3 := "auto-restart " + autoStyle.Render(auto)
-
-	out := line1
-	if line2 != "" {
-		out += "\n" + line2
-	}
-	return out + "\n" + line3
-}
-
-// logsSection renders the last 5 log lines (or a placeholder).
-func (m Model) logsSection(inner int) string {
+	// Logs: last 5 lines (or a placeholder).
 	source := m.logSource
 	if source == "" {
 		source = "none"
 	}
-	out := wlDimStyle.Render("LAST 5 LOGS  [" + source + "]")
+	out = append(out, line(seg{"LAST 5 LOGS  [" + source + "]", wlDim}))
 	if len(m.logs) == 0 {
-		return out + "\n" + wlDimStyle.Render("  no logs yet")
-	}
-	for _, l := range m.logs {
-		ts := l.Time
-		if l.Observed {
-			ts = wlDimStyle.Render(ts)
+		out = append(out, line(seg{"  no logs yet", wlDim}))
+	} else {
+		for _, l := range m.logs {
+			tsFG := wlPlain
+			if l.Observed {
+				tsFG = wlDim
+			}
+			out = append(out, line(
+				seg{"  " + l.Time, tsFG},
+				seg{" " + truncate(l.Text, bw-11), wlPlain},
+			))
 		}
-		out += "\n  " + ts + " " + truncate(l.Text, inner-11)
 	}
-	return out
-}
+	out = append(out, rule)
 
-// eventsSection renders the last 6 monitor events, oldest first.
-func (m Model) eventsSection(inner int) string {
-	out := wlDimStyle.Render("EVENTS")
+	// Events: last 6 monitor events, oldest first.
+	out = append(out, line(seg{"EVENTS", wlDim}))
 	evs := m.mon.Events()
 	if len(evs) > 6 {
 		evs = evs[len(evs)-6:]
 	}
 	if len(evs) == 0 {
-		return out + "\n" + wlDimStyle.Render("  no events yet")
+		out = append(out, line(seg{"  no events yet", wlDim}))
+	} else {
+		for _, e := range evs {
+			icon, iconFG := eventIcon(e.Kind)
+			out = append(out, line(
+				seg{"  " + e.Time.Format("15:04:05"), wlDim},
+				seg{" " + icon, iconFG},
+				seg{" " + truncate(e.Message, bw-13), wlPlain},
+			))
+		}
 	}
-	for _, e := range evs {
-		icon, style := eventIcon(e.Kind)
-		out += "\n  " + wlDimStyle.Render(e.Time.Format("15:04:05")) + " " +
-			style.Render(icon) + " " + truncate(e.Message, inner-13)
-	}
-	return out
-}
+	out = append(out, rule)
 
-// eventIcon maps an event kind to its display icon and style.
-func eventIcon(kind string) (string, lipgloss.Style) {
-	switch kind {
-	case "death":
-		return "⚠", wlWarnStyle
-	case "restart":
-		return "↻", wlDimStyle
-	case "recovered":
-		return "✓", wlOKStyle
-	case "failed":
-		return "✗", wlErrStyle
-	default:
-		return "·", wlDimStyle
-	}
-}
-
-// resourcesSection renders the RAM, CPU, and GPU lines.
-func (m Model) resourcesSection() string {
-	out := wlDimStyle.Render("RESOURCES")
-
+	// Resources: RAM, CPU, GPU.
+	out = append(out, line(seg{"RESOURCES", wlDim}))
 	ram := "N/A"
 	if m.res.RAMTotal > 0 {
 		used := float64(m.res.RAMTotal-m.res.RAMFree) / (1 << 30)
 		total := float64(m.res.RAMTotal) / (1 << 30)
 		ram = fmt.Sprintf("%.1f / %.1f GiB", used, total)
 	}
-	out += "\n  RAM   " + ram
-
+	out = append(out, line(seg{"  RAM   ", wlDim}, seg{ram, wlPlain}))
 	cpu := "N/A"
 	if m.res.Cores > 0 {
 		cpu = fmt.Sprintf("load %.2f (%dc)", m.res.Load1, m.res.Cores)
 	}
-	out += "\n  CPU   " + cpu
-
+	out = append(out, line(seg{"  CPU   ", wlDim}, seg{cpu, wlPlain}))
 	gpu := m.res.GPUModel
 	if gpu == "" {
 		gpu = "N/A"
 	}
-	out += "\n  GPU   " + gpu + " · " + m.res.GPUUtil
+	out = append(out, line(seg{"  GPU   ", wlDim}, seg{gpu + " · " + m.res.GPUUtil, wlPlain}))
 	return out
+}
+
+// eventIcon maps an event kind to its display icon and foreground.
+func eventIcon(kind string) (string, string) {
+	switch kind {
+	case "death":
+		return "⚠", wlWarn
+	case "restart":
+		return "↻", wlDim
+	case "recovered":
+		return "✓", wlOK
+	case "failed":
+		return "✗", wlErr
+	default:
+		return "·", wlDim
+	}
+}
+
+// toBlock expands the panel lines into a grid of cells: each segment's
+// runes take the segment's foreground; short lines are padded with zero
+// (transparent) cells up to bw. Lines longer than bw (only the key-hint
+// line with a watching suffix can be) keep their full length and simply
+// extend into the rain margin.
+func toBlock(lines []sline, bw int) [][]cell {
+	block := make([][]cell, len(lines))
+	for y, l := range lines {
+		var row []cell
+		for _, s := range l.segs {
+			for _, r := range s.text {
+				row = append(row, cell{r: r, fg: s.fg})
+			}
+		}
+		for len(row) < bw {
+			row = append(row, cell{})
+		}
+		block[y] = row
+	}
+	return block
+}
+
+// compositeField renders the rain field with the stats block overlaid at
+// (fx, fy): block cells with a visible rune are drawn in their own
+// foreground, everything else — including the block's spaces — shows the
+// rain. Color codes are emitted only when the foreground changes.
+func compositeField(field [][]rune, block [][]cell, fx, fy int) string {
+	h := len(field)
+	w := 0
+	if h > 0 {
+		w = len(field[0])
+	}
+	var sb strings.Builder
+	for y := 0; y < h; y++ {
+		sb.WriteString(wlRain)
+		cur := wlRain
+		for x := 0; x < w; x++ {
+			var c cell
+			if y >= fy && y-fy < len(block) && x >= fx && x-fx < len(block[y-fy]) {
+				c = block[y-fy][x-fx]
+			}
+			if c.r != 0 && c.r != ' ' {
+				if c.fg != cur {
+					sb.WriteString(c.fg)
+					cur = c.fg
+				}
+				sb.WriteRune(c.r)
+			} else {
+				// A space is invisible, so no color switch is needed for it;
+				// skipping the code keeps plain text contiguous across the
+				// block's spaces.
+				if field[y][x] != ' ' && cur != wlRain {
+					sb.WriteString(wlRain)
+					cur = wlRain
+				}
+				sb.WriteRune(field[y][x])
+			}
+		}
+		sb.WriteString("\x1b[0m")
+		if y < h-1 {
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+// View renders the dashboard: the ripple rain across the whole terminal
+// with the stats block centered over it, rain showing through the block's
+// spaces — the same look as the wizard's welcome screen.
+func (m Model) View() string {
+	if m.width < minWidth || m.height < minHeight {
+		msg := wlDim + "terminal too small — resize to at least 80x24" + wlPlain
+		if m.width > 0 && m.height > 0 {
+			return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, msg)
+		}
+		return msg
+	}
+	field := m.rip.Chars(m.width, m.height)
+	bw := blockWidth(m.width)
+	block := toBlock(m.panelLines(), bw)
+	fx, fy := (m.width-bw)/2, (m.height-len(block))/2
+	if fx < 0 {
+		fx = 0
+	}
+	if fy < 0 {
+		fy = 0
+	}
+	return compositeField(field, block, fx, fy)
 }
 
 // truncate shortens s to w display columns, appending an ellipsis when it

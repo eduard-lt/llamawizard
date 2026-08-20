@@ -45,7 +45,7 @@ func testModel(t *testing.T) Model {
 	m := InitialModel(plist, t.TempDir(), &state.State{Port: 8080}, "v0.1.6")
 	m.width = 100
 	m.height = 30
-	m.rip.SetSize(rainWidth(m.width), m.height)
+	m.rip.SetSize(m.width, m.height)
 
 	now := time.Date(2026, 8, 19, 21, 41, 0, 0, time.Local)
 	m.mon.Now = func() time.Time { return now }
@@ -153,6 +153,77 @@ func TestUIView(t *testing.T) {
 	if !strings.Contains(v, "\x1b[34m") {
 		t.Error("View() missing the blue rain foreground")
 	}
+}
+
+func TestCompositeField(t *testing.T) {
+	field := make([][]rune, 4)
+	for y := 0; y < 4; y++ {
+		field[y] = make([]rune, 12)
+		for x := 0; x < 12; x++ {
+			field[y][x] = '@'
+		}
+	}
+	block := [][]cell{{
+		{'A', wlOK}, {' ', ""}, {'B', wlOK}, {' ', ""}, {' ', ""}, {'C', wlErr},
+	}}
+	out := compositeField(field, block, 2, 1)
+	rows := strings.Split(out, "\n")
+	if len(rows) != 4 {
+		t.Fatalf("got %d rows, want 4", len(rows))
+	}
+	for i, row := range rows {
+		if !strings.HasPrefix(row, wlRain) {
+			t.Errorf("row %d does not start with the rain color: %q", i, row)
+		}
+		if !strings.HasSuffix(row, "\x1b[0m") {
+			t.Errorf("row %d does not end with the reset code: %q", i, row)
+		}
+	}
+
+	// Rows outside the block are pure rain.
+	for _, i := range []int{0, 2, 3} {
+		if rows[i] != wlRain+strings.Repeat("@", 12)+"\x1b[0m" {
+			t.Errorf("row %d = %q, want pure rain", i, rows[i])
+		}
+	}
+
+	// Row 1: A and B under wlOK, the two space cells render as '@', C under
+	// wlErr.
+	r1 := rows[1]
+	if !strings.Contains(r1, wlOK+"A") || !strings.Contains(r1, wlOK+"B") {
+		t.Errorf("row 1 missing A/B under the wlOK code: %q", r1)
+	}
+	if !strings.Contains(r1, wlErr+"C") {
+		t.Errorf("row 1 missing C under the wlErr code: %q", r1)
+	}
+	if !strings.Contains(r1, "@@") {
+		t.Errorf("row 1 space cells should render as rain '@': %q", r1)
+	}
+	// The visible (non-escape) content is the full 12-column row: the block's
+	// space cells show the rain '@'.
+	visible := stripANSI(r1)
+	if visible != "@@A@B@@C@@@@" {
+		t.Errorf("row 1 visible content = %q, want %q", visible, "@@A@B@@C@@@@")
+	}
+}
+
+// stripANSI removes ANSI escape sequences from s.
+func stripANSI(s string) string {
+	var sb strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' {
+			j := i + 1
+			for j < len(s) && s[j] != 'm' {
+				j++
+			}
+			i = j + 1
+			continue
+		}
+		sb.WriteByte(s[i])
+		i++
+	}
+	return sb.String()
 }
 
 func TestUIViewSmallTerminal(t *testing.T) {
