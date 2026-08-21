@@ -98,6 +98,17 @@ func TestUIInitialModel(t *testing.T) {
 	}
 }
 
+func TestUIInitSetsTerminalTitle(t *testing.T) {
+	m := testModel(t)
+	want := tea.SetWindowTitle("llamawarlock")()
+	for _, msg := range runCmd(t, m.Init()) {
+		if msg == want {
+			return
+		}
+	}
+	t.Error("Init() should set the terminal title to \"llamawarlock\"")
+}
+
 func TestUIView(t *testing.T) {
 	m := testModel(t)
 	v := m.View()

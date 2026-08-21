@@ -95,9 +95,11 @@ type resResultMsg struct {
 	res Resources
 }
 
-// Init starts the rain animation and all the polls.
+// Init sets a short, static terminal title (so the shell's per-command
+// title does not clutter the tab) and starts the rain animation and polls.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
+		tea.SetWindowTitle("llamawarlock"),
 		m.rip.Tick(),
 		m.statusPoll(),
 		m.logPoll(),
