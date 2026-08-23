@@ -2,6 +2,7 @@ package warlock
 
 import (
 	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +99,23 @@ func TestUIInitialModel(t *testing.T) {
 	}
 }
 
+func TestLocalIP(t *testing.T) {
+	ip := localIP()
+	if ip == "" {
+		t.Skip("no LAN IPv4 available in this environment")
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		t.Fatalf("localIP() = %q, want a parseable IP", ip)
+	}
+	if parsed.To4() == nil {
+		t.Errorf("localIP() = %q, want an IPv4 address", ip)
+	}
+	if parsed.IsLoopback() {
+		t.Errorf("localIP() = %q, loopback is not a LAN address", ip)
+	}
+}
+
 func TestUIInitSetsTerminalTitle(t *testing.T) {
 	m := testModel(t)
 	want := tea.SetWindowTitle("llamawarlock")()
@@ -111,6 +129,8 @@ func TestUIInitSetsTerminalTitle(t *testing.T) {
 
 func TestUIView(t *testing.T) {
 	m := testModel(t)
+	m.localIP = "192.168.1.42"
+	m.lanHost = "0.0.0.0"
 	v := m.View()
 
 	for _, want := range []string{
@@ -129,15 +149,37 @@ func TestUIView(t *testing.T) {
 		"restart failed: bootstrap",
 		// The log line is truncated to the panel width; assert the stable prefix.
 		`[INFO] Request 127.0.0.1 "POST`,
+		"192.168.1.42",
+		"LAN",
 	} {
 		if !strings.Contains(v, want) {
 			t.Errorf("View() missing %q\n---\n%s", want, v)
 		}
 	}
 
+	// The service line order is: port, then local IP, then the LAN marker.
+	iPort := strings.Index(v, "port 8080")
+	iIP := strings.Index(v, "192.168.1.42")
+	iLAN := strings.Index(v, "LAN")
+	if iPort == -1 || iIP == -1 || iLAN == -1 || iIP <= iPort || iLAN <= iIP {
+		t.Errorf("service line should order port < local IP < LAN\n---\n%s", v)
+	}
+
 	// The rain pane carries the blue foreground, like the welcome screen.
 	if !strings.Contains(v, "\x1b[34m") {
 		t.Error("View() missing the blue rain foreground")
+	}
+}
+
+func TestUIView_NoLAN(t *testing.T) {
+	// testModel's plist does not exist on disk, so InitialModel leaves
+	// lanHost empty and the LAN marker must not render.
+	m := testModel(t)
+	if m.lanHost != "" {
+		t.Fatalf("lanHost = %q, want empty for a missing plist", m.lanHost)
+	}
+	if v := m.View(); strings.Contains(v, "LAN") {
+		t.Errorf("View() should not show the LAN marker when not listening on 0.0.0.0\n---\n%s", v)
 	}
 }
 

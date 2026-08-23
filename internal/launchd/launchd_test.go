@@ -133,6 +133,103 @@ func TestWritePlist_DefaultPath(t *testing.T) {
 	}
 }
 
+// renderTestPlist writes a plist rendered from the real template into dir.
+func renderTestPlist(t *testing.T, dir, label, port string) string {
+	t.Helper()
+	plistPath := filepath.Join(dir, label+".plist")
+	f, err := os.Create(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := plistData{
+		Label:      label,
+		BinaryPath: "/usr/bin/true",
+		ConfigPath: filepath.Join(dir, "config.yaml"),
+		Port:       port,
+		LogDir:     dir,
+		WorkDir:    dir,
+	}
+	if err := plistTmpl.Execute(f, data); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	return plistPath
+}
+
+func TestCurrentListenHost(t *testing.T) {
+	plistPath := renderTestPlist(t, t.TempDir(), "com.test.listen", "8080")
+	h, err := CurrentListenHost(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h != "127.0.0.1" {
+		t.Errorf("CurrentListenHost = %q, want 127.0.0.1", h)
+	}
+}
+
+func TestCurrentListenHost_MissingFile(t *testing.T) {
+	if _, err := CurrentListenHost("/nonexistent/plist.plist"); err == nil {
+		t.Error("CurrentListenHost on a missing file should fail")
+	}
+}
+
+func TestSetListenHost(t *testing.T) {
+	dir := t.TempDir()
+	plistPath := renderTestPlist(t, dir, "com.test.listen", "8080")
+
+	// Stub the reload so the test never touches real launchd.
+	realInstall := install
+	install = func(string) error { return nil }
+	t.Cleanup(func() { install = realInstall })
+
+	changed, err := SetListenHost(plistPath, "0.0.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("first SetListenHost should report changed")
+	}
+	text, _ := os.ReadFile(plistPath)
+	if !strings.Contains(string(text), "<string>0.0.0.0:8080</string>") {
+		t.Errorf("plist should listen on 0.0.0.0:8080, got:\n%s", text)
+	}
+
+	// A no-op reload when the host is already set.
+	changed, err = SetListenHost(plistPath, "0.0.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("SetListenHost on the same host should not report changed")
+	}
+
+	// Restore loopback; the port must be preserved.
+	changed, err = SetListenHost(plistPath, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("restoring loopback should report changed")
+	}
+	text, _ = os.ReadFile(plistPath)
+	if !strings.Contains(string(text), "<string>127.0.0.1:8080</string>") {
+		t.Errorf("plist should listen on 127.0.0.1:8080, got:\n%s", text)
+	}
+}
+
+func TestSetListenHost_Malformed(t *testing.T) {
+	dir := t.TempDir()
+	plistPath := filepath.Join(dir, "bad.plist")
+	if err := os.WriteFile(plistPath, []byte("<plist><dict/></plist>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := SetListenHost(plistPath, "0.0.0.0"); err == nil {
+		t.Error("SetListenHost on a plist without -listen should fail")
+	}
+}
+
 func TestUninstall_RemovesPlist(t *testing.T) {
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, PlistName)

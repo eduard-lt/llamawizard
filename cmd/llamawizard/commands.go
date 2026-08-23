@@ -7,8 +7,11 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -137,7 +140,18 @@ func runRestart() {
 	fmt.Println("Service restarted.")
 }
 
-func runWarlock() {
+func runWarlock(args []string) {
+	noLAN := false
+	for _, a := range args {
+		switch a {
+		case "--no-lan":
+			noLAN = true
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown flag %q. Usage: llamawizard warlock [--no-lan]\n", a)
+			os.Exit(1)
+		}
+	}
+
 	plistPath, err := defaultPlistPath()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -149,6 +163,43 @@ func runWarlock() {
 		os.Exit(1)
 	}
 
+	// LAN access is tied to the warlock session (unless --no-lan): while
+	// warlock is open the proxy listens on all interfaces, and it is
+	// restored to loopback when warlock exits. The defer covers normal quit,
+	// panic, and errors; the signal handler covers external termination
+	// (SIGTERM/SIGHUP). SIGINT is left to Bubble Tea so ctrl+c quits
+	// gracefully. With --no-lan nothing is opened, so closing is a no-op.
+	var closeOnce sync.Once
+	closeLAN := func() {
+		if noLAN {
+			return
+		}
+		closeOnce.Do(func() {
+			if _, err := launchd.SetListenHost(plistPath, "127.0.0.1"); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not close LAN access: %v\n", err)
+			}
+		})
+	}
+	defer closeLAN()
+
+	if noLAN {
+		fmt.Fprintln(os.Stderr, "LAN access off (--no-lan) — service stays loopback-only")
+	} else {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGHUP)
+		go func() {
+			sig := <-sigCh
+			closeLAN()
+			os.Exit(128 + int(sig.(syscall.Signal)))
+		}()
+
+		if changed, err := launchd.SetListenHost(plistPath, "0.0.0.0"); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not open LAN access: %v\n", err)
+		} else if changed {
+			fmt.Fprintln(os.Stderr, "LAN access opened (0.0.0.0) — closed automatically when warlock exits")
+		}
+	}
+
 	st, err := state.Load("")
 	if err != nil {
 		st = &state.State{} // port display only — never fail hard
@@ -157,6 +208,7 @@ func runWarlock() {
 	p := tea.NewProgram(warlock.InitialModel(plistPath, st, version), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		closeLAN()
 		os.Exit(1)
 	}
 }

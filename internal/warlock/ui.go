@@ -8,6 +8,7 @@ package warlock
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/eduard-lt/llamawizard/internal/launchd"
 	"github.com/eduard-lt/llamawizard/internal/ripple"
 	"github.com/eduard-lt/llamawizard/internal/state"
 )
@@ -52,6 +54,8 @@ type Model struct {
 	mon                *Monitor
 	port               int
 	version            string
+	localIP            string
+	lanHost            string
 	logs               []LogLine
 	logSource          string
 	res                Resources
@@ -60,16 +64,21 @@ type Model struct {
 
 // InitialModel returns a fresh dashboard for the LaunchAgent at plistPath.
 // st may be nil (first run, no state.json): the port then shows as N/A.
+// The plist's listen host is read at startup so the dashboard can show
+// whether LAN access is open (runWarlock opens it while warlock runs).
 func InitialModel(plistPath string, st *state.State, version string) Model {
 	port := 0
 	if st != nil {
 		port = st.Port
 	}
+	lanHost, _ := launchd.CurrentListenHost(plistPath)
 	return Model{
 		rip:     ripple.New(),
 		mon:     NewMonitor(plistPath),
 		port:    port,
 		version: version,
+		localIP: localIP(),
+		lanHost: lanHost,
 	}
 }
 
@@ -221,6 +230,57 @@ func (m Model) resPoll() tea.Cmd {
 	}
 }
 
+// localIP returns the machine's LAN IPv4 address — the one a neighbor on
+// the network would use to reach this machine — or "" when it cannot be
+// determined. It is resolved once at startup; if the network changes later
+// (e.g. Wi-Fi reconnects with a new address), restarting warlock refreshes it.
+func localIP() string {
+	if ip := egressIP(); ip != "" {
+		return ip
+	}
+	// Fallback: first non-loopback IPv4 on any up interface.
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ip4 := ipnet.IP.To4(); ip4 != nil && !ip4.IsLoopback() {
+				return ip4.String()
+			}
+		}
+	}
+	return ""
+}
+
+// egressIP resolves the IP of the interface the default route would use by
+// opening a UDP socket toward a public address. No packets are sent; the
+// kernel only has to pick the egress interface.
+func egressIP() string {
+	conn, err := net.Dial("udp4", "1.1.1.1:80")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	if ua, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+		if ip4 := ua.IP.To4(); ip4 != nil {
+			return ip4.String()
+		}
+	}
+	return ""
+}
+
 // stateLine returns the "state = …" line from a launchctl print dump, or "".
 func stateLine(out string) string {
 	for _, line := range strings.Split(out, "\n") {
@@ -310,6 +370,12 @@ func (m Model) panelLines() []sline {
 		svc = append(svc, seg{" · ", wlDim}, seg{"recovering…", wlWarn})
 	}
 	svc = append(svc, seg{" · ", wlDim}, seg{port, wlPlain})
+	if m.localIP != "" {
+		svc = append(svc, seg{" · ", wlDim}, seg{m.localIP, wlPlain})
+	}
+	if m.lanHost == "0.0.0.0" {
+		svc = append(svc, seg{" · ", wlDim}, seg{"LAN", wlOK})
+	}
 	out = append(out, line(svc...))
 	switch {
 	case s == StateRunning && !m.upSince.IsZero():
