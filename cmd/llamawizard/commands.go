@@ -165,17 +165,30 @@ func runWarlock(args []string) {
 
 	// LAN access is tied to the warlock session (unless --no-lan): while
 	// warlock is open the proxy listens on all interfaces, and it is
-	// restored to loopback when warlock exits. The defer covers normal quit,
-	// panic, and errors; the signal handler covers external termination
-	// (SIGTERM/SIGHUP). SIGINT is left to Bubble Tea so ctrl+c quits
-	// gracefully. With --no-lan nothing is opened, so closing is a no-op.
+	// restored to its original listen host when warlock exits. The original
+	// host is captured before opening so a plist that was not on loopback
+	// (e.g. already 0.0.0.0) is left exactly as it was found. If the plist
+	// cannot be read, fall back to the installer's default of loopback.
+	// The defer covers normal quit, panic, and errors; the signal handler
+	// covers external termination (SIGINT/SIGTERM/SIGHUP). SIGINT is caught
+	// here as well: in-terminal ctrl+c never generates a signal (raw mode
+	// delivers it to Bubble Tea as a keystroke), so this only affects
+	// externally-sent SIGINT (kill -INT, pkill), which would otherwise kill
+	// the process before Bubble Tea's own handler is registered and leave
+	// the plist on 0.0.0.0. With --no-lan nothing is opened, so closing is
+	// a no-op.
+	origHost, err := launchd.CurrentListenHost(plistPath)
+	if err != nil {
+		origHost = "127.0.0.1"
+	}
+
 	var closeOnce sync.Once
 	closeLAN := func() {
 		if noLAN {
 			return
 		}
 		closeOnce.Do(func() {
-			if _, err := launchd.SetListenHost(plistPath, "127.0.0.1"); err != nil {
+			if _, err := launchd.SetListenHost(plistPath, origHost); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not close LAN access: %v\n", err)
 			}
 		})
@@ -186,7 +199,7 @@ func runWarlock(args []string) {
 		fmt.Fprintln(os.Stderr, "LAN access off (--no-lan) — service stays loopback-only")
 	} else {
 		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGHUP)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 		go func() {
 			sig := <-sigCh
 			closeLAN()
