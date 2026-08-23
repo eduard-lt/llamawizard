@@ -2,9 +2,11 @@ package launchd
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"text/template"
 )
 
@@ -53,6 +55,10 @@ type plistData struct {
 	LogDir     string
 	WorkDir    string
 }
+
+// install loads a plist into launchd. Indirection so tests can skip the
+// real launchctl.
+var install = Install
 
 func domain() string {
 	return fmt.Sprintf("gui/%d", os.Getuid())
@@ -136,6 +142,121 @@ func WritePlist(binaryPath, configPath string, port int) (string, error) {
 	}
 
 	return plistPath, nil
+}
+
+// CurrentListenHost returns the host part of the plist's -listen address
+// (e.g. "127.0.0.1" or "0.0.0.0").
+func CurrentListenHost(plistPath string) (string, error) {
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		return "", fmt.Errorf("reading plist: %w", err)
+	}
+	addr, err := listenAddrIn(string(data))
+	if err != nil {
+		return "", err
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("parsing listen address %q: %w", addr, err)
+	}
+	return host, nil
+}
+
+// SetListenHost rewrites the host of the plist's -listen address (the port
+// is preserved) and reloads the service so the new address takes effect.
+//
+// It returns changed=false without touching the service when the plist
+// already listens on host. The reload is a bootout+bootstrap cycle, so the
+// service briefly restarts.
+func SetListenHost(plistPath, host string) (bool, error) {
+	changed, err := SetListenHostFile(plistPath, host)
+	if err != nil || !changed {
+		return changed, err
+	}
+	if err := install(plistPath); err != nil {
+		return false, fmt.Errorf("plist updated but service reload failed: %w", err)
+	}
+	return true, nil
+}
+
+// SetListenHostFile rewrites the host of the plist's -listen address (the
+// port is preserved) without reloading the service. The new address takes
+// effect the next time the service is loaded.
+//
+// It returns changed=false without touching the file when the plist already
+// listens on host.
+func SetListenHostFile(plistPath, host string) (bool, error) {
+	current, err := CurrentListenHost(plistPath)
+	if err != nil {
+		return false, err
+	}
+	if current == host {
+		return false, nil
+	}
+	if err := setListenHostFile(plistPath, host); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Loaded reports whether the service is currently loaded in the user's gui
+// domain — running, exited, or waiting. A service that was stopped with
+// bootout (e.g. 'llamawizard stop') is not loaded.
+func Loaded() bool {
+	return loadedByLabel(ServiceLabel)
+}
+
+func loadedByLabel(label string) bool {
+	_, err := statusByLabel(label)
+	return err == nil
+}
+
+// listenAddrIn returns the address string that follows the -listen flag in a
+// rendered plist.
+func listenAddrIn(plist string) (string, error) {
+	lines := strings.Split(plist, "\n")
+	for i, l := range lines {
+		if strings.TrimSpace(l) != "<string>-listen</string>" {
+			continue
+		}
+		for _, next := range lines[i+1:] {
+			next = strings.TrimSpace(next)
+			if next == "" {
+				continue
+			}
+			if strings.HasPrefix(next, "<string>") && strings.HasSuffix(next, "</string>") {
+				return next[len("<string>") : len(next)-len("</string>")], nil
+			}
+			return "", fmt.Errorf("malformed plist: expected an address after -listen, got %q", next)
+		}
+		return "", fmt.Errorf("malformed plist: -listen has no value")
+	}
+	return "", fmt.Errorf("plist has no -listen argument")
+}
+
+// setListenHostFile rewrites only the -listen address line in the plist
+// file, preserving the port and every other byte.
+func setListenHostFile(plistPath, host string) error {
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		return fmt.Errorf("reading plist: %w", err)
+	}
+	old, err := listenAddrIn(string(data))
+	if err != nil {
+		return err
+	}
+	_, port, err := net.SplitHostPort(old)
+	if err != nil {
+		return fmt.Errorf("parsing listen address %q: %w", old, err)
+	}
+	out := strings.Replace(string(data), "<string>"+old+"</string>", "<string>"+host+":"+port+"</string>", 1)
+	if out == string(data) {
+		return fmt.Errorf("plist does not contain listen address %q", old)
+	}
+	if err := os.WriteFile(plistPath, []byte(out), 0o644); err != nil {
+		return fmt.Errorf("writing plist: %w", err)
+	}
+	return nil
 }
 
 // Install bootstraps the LaunchAgent so it loads at login and runs now.

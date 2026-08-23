@@ -429,6 +429,7 @@ func TestDownloadTemp_ClosesBodyOnNon200(t *testing.T) {
 			_, _ = w.Write([]byte("not found"))
 		}),
 	}
+	srv.SetKeepAlivesEnabled(false)
 	srv.ConnState = func(_ net.Conn, state http.ConnState) {
 		if state == http.StateClosed {
 			select {

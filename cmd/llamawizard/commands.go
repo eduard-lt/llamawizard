@@ -7,8 +7,11 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,6 +25,7 @@ import (
 	"github.com/eduard-lt/llamawizard/internal/pi"
 	"github.com/eduard-lt/llamawizard/internal/state"
 	"github.com/eduard-lt/llamawizard/internal/update"
+	"github.com/eduard-lt/llamawizard/internal/warlock"
 	"github.com/eduard-lt/llamawizard/internal/wizard"
 )
 
@@ -134,6 +138,106 @@ func runRestart() {
 		os.Exit(1)
 	}
 	fmt.Println("Service restarted.")
+}
+
+func runWarlock(args []string) {
+	noLAN := false
+	for _, a := range args {
+		switch a {
+		case "--no-lan":
+			noLAN = true
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown flag %q. Usage: llamawizard warlock [--no-lan]\n", a)
+			os.Exit(1)
+		}
+	}
+
+	plistPath, err := defaultPlistPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if _, err := os.Stat(plistPath); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "No LaunchAgent found at %s. Run 'llamawizard' (setup) first.\n", plistPath)
+		os.Exit(1)
+	}
+
+	// LAN access is tied to the warlock session (unless --no-lan): while
+	// warlock is open the proxy listens on all interfaces, and it is
+	// restored to its original listen host when warlock exits. The original
+	// host is captured before opening so a plist that was not on loopback
+	// (e.g. already 0.0.0.0) is left exactly as it was found. If the plist
+	// cannot be read, fall back to the installer's default of loopback.
+	// The defer covers normal quit, panic, and errors; the signal handler
+	// covers external termination (SIGINT/SIGTERM/SIGHUP). SIGINT is caught
+	// here as well: in-terminal ctrl+c never generates a signal (raw mode
+	// delivers it to Bubble Tea as a keystroke), so this only affects
+	// externally-sent SIGINT (kill -INT, pkill), which would otherwise kill
+	// the process before Bubble Tea's own handler is registered and leave
+	// the plist on 0.0.0.0. With --no-lan nothing is opened, so closing is
+	// a no-op.
+	origHost, err := launchd.CurrentListenHost(plistPath)
+	if err != nil {
+		origHost = "127.0.0.1"
+	}
+
+	var closeOnce sync.Once
+	closeLAN := func() {
+		if noLAN {
+			return
+		}
+		closeOnce.Do(func() {
+			// The plist file is always restored, but the service is only
+			// reloaded when it is still loaded: if it was stopped while
+			// warlock was open (e.g. 'llamawizard stop' in another
+			// terminal), bootstrapping would resurrect a service the user
+			// explicitly stopped. The restored plist takes effect on the
+			// next load.
+			changed, err := launchd.SetListenHostFile(plistPath, origHost)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not close LAN access: %v\n", err)
+				return
+			}
+			if !changed || !launchd.Loaded() {
+				return
+			}
+			if err := launchd.Install(plistPath); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not close LAN access: %v\n", err)
+			}
+		})
+	}
+	defer closeLAN()
+
+	if noLAN {
+		fmt.Fprintln(os.Stderr, "LAN access off (--no-lan) — service stays loopback-only")
+	} else {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+		go func() {
+			sig := <-sigCh
+			closeLAN()
+			os.Exit(128 + int(sig.(syscall.Signal)))
+		}()
+
+		if changed, err := launchd.SetListenHost(plistPath, "0.0.0.0"); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not open LAN access: %v\n", err)
+		} else if changed {
+			fmt.Fprintln(os.Stderr, "LAN access opened (0.0.0.0) — closed automatically when warlock exits")
+		}
+	}
+
+	st, err := state.Load("")
+	if err != nil {
+		st = &state.State{} // port display only — never fail hard
+	}
+
+	p := tea.NewProgram(warlock.InitialModel(plistPath, st, version), tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		closeLAN()
+		os.Exit(1)
+	}
 }
 
 func runDoctor() {

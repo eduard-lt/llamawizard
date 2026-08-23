@@ -182,6 +182,7 @@ Running `llamawizard` with no arguments walks through every step:
 | `llamawizard start` | Start the llama-swap service |
 | `llamawizard stop` | Stop the llama-swap service |
 | `llamawizard restart` | Restart the llama-swap service |
+| `llamawizard warlock` | Live service guardian: rain dashboard (logs, events, RAM) with automatic restart; opens LAN access while open |
 | `llamawizard doctor` | Run a standalone health check |
 | `llamawizard logs` | Show recent service logs |
 | `llamawizard models add` | Add a model (interactive) |
@@ -195,6 +196,8 @@ Running `llamawizard` with no arguments walks through every step:
 
 Notes on commands whose behavior isn't obvious from the name alone:
 
+- **`warlock`** polls `launchctl print` every 2 s and issues a kickstart/bootstrap restart within ~2 s of detecting death (retry every 5 s until the service is back); the dashboard shows the last 5 log lines, guardian events, RAM metrics, and the machine's LAN IP; keys: `q` quit, `r` toggle auto-restart, `a` restart now.
+- **LAN access** is tied to the `warlock` session: while it is open the proxy listens on `0.0.0.0:<port>` (shown as `LAN` on the service line), so other devices on the network can connect to `http://<laptop-ip>:<port>/v1` (send the API key as `Authorization: Bearer <key>` if one is set); when warlock exits — quit, crash, or any termination signal — the plist is restored to its original listen host and reloaded. Run `warlock --no-lan` to keep the loopback-only binding. The first remote connection triggers the macOS firewall prompt for the llama-swap binary; click **Allow**. The plist reload briefly restarts the service when warlock starts and when it exits — unless the service was stopped while warlock was open (e.g. `llamawizard stop` in another terminal): then warlock restores the plist on exit but does not restart the service.
 - **`stop`** unloads the service from launchd via `bootout`, not a plain `kill`. The LaunchAgent plist uses `KeepAlive` with `SuccessfulExit=false`, so a raw kill would just get the process restarted — `bootout` is the correct way to actually stop it.
 - **`doctor`** polls `http://127.0.0.1:<port>/v1/models` with exponential backoff (first attempt immediate, then 2s, 4s, 8s, 16s) and confirms every expected model ID is present. On failure it prints the last 20 lines of the llama-swap error log, and saves the result to `state.json`.
 - **`models remove`** deletes the entry from `state.json`, regenerates the llama-swap config, and restarts the service — but leaves the model file untouched on disk. Use **`models delete`** if you also want the file gone.
