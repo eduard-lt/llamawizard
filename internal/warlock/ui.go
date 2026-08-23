@@ -271,10 +271,11 @@ func localIP() string {
 }
 
 // egressIP resolves the IP of the interface the default route would use by
-// opening a UDP socket toward a public address. No packets are sent; the
-// kernel only has to pick the egress interface.
+// opening a UDP socket toward a public address (8.8.8.8:53, a well-known
+// public DNS endpoint). No packets are sent; the kernel only has to pick
+// the egress interface.
 func egressIP() string {
-	conn, err := net.Dial("udp4", "1.1.1.1:80")
+	conn, err := net.Dial("udp4", "8.8.8.8:53")
 	if err != nil {
 		return ""
 	}
