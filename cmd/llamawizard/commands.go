@@ -188,7 +188,21 @@ func runWarlock(args []string) {
 			return
 		}
 		closeOnce.Do(func() {
-			if _, err := launchd.SetListenHost(plistPath, origHost); err != nil {
+			// The plist file is always restored, but the service is only
+			// reloaded when it is still loaded: if it was stopped while
+			// warlock was open (e.g. 'llamawizard stop' in another
+			// terminal), bootstrapping would resurrect a service the user
+			// explicitly stopped. The restored plist takes effect on the
+			// next load.
+			changed, err := launchd.SetListenHostFile(plistPath, origHost)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not close LAN access: %v\n", err)
+				return
+			}
+			if !changed || !launchd.Loaded() {
+				return
+			}
+			if err := launchd.Install(plistPath); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not close LAN access: %v\n", err)
 			}
 		})

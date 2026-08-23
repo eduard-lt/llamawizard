@@ -169,6 +169,23 @@ func CurrentListenHost(plistPath string) (string, error) {
 // already listens on host. The reload is a bootout+bootstrap cycle, so the
 // service briefly restarts.
 func SetListenHost(plistPath, host string) (bool, error) {
+	changed, err := SetListenHostFile(plistPath, host)
+	if err != nil || !changed {
+		return changed, err
+	}
+	if err := install(plistPath); err != nil {
+		return false, fmt.Errorf("plist updated but service reload failed: %w", err)
+	}
+	return true, nil
+}
+
+// SetListenHostFile rewrites the host of the plist's -listen address (the
+// port is preserved) without reloading the service. The new address takes
+// effect the next time the service is loaded.
+//
+// It returns changed=false without touching the file when the plist already
+// listens on host.
+func SetListenHostFile(plistPath, host string) (bool, error) {
 	current, err := CurrentListenHost(plistPath)
 	if err != nil {
 		return false, err
@@ -179,10 +196,19 @@ func SetListenHost(plistPath, host string) (bool, error) {
 	if err := setListenHostFile(plistPath, host); err != nil {
 		return false, err
 	}
-	if err := install(plistPath); err != nil {
-		return false, fmt.Errorf("plist updated but service reload failed: %w", err)
-	}
 	return true, nil
+}
+
+// Loaded reports whether the service is currently loaded in the user's gui
+// domain — running, exited, or waiting. A service that was stopped with
+// bootout (e.g. 'llamawizard stop') is not loaded.
+func Loaded() bool {
+	return loadedByLabel(ServiceLabel)
+}
+
+func loadedByLabel(label string) bool {
+	_, err := statusByLabel(label)
+	return err == nil
 }
 
 // listenAddrIn returns the address string that follows the -listen flag in a

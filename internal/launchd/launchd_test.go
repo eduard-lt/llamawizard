@@ -218,6 +218,41 @@ func TestSetListenHost(t *testing.T) {
 	}
 }
 
+func TestSetListenHostFile_NoReload(t *testing.T) {
+	dir := t.TempDir()
+	plistPath := renderTestPlist(t, dir, "com.test.listenfile", "8080")
+
+	// Stub the reload and count calls: SetListenHostFile must never reload.
+	calls := 0
+	realInstall := install
+	install = func(string) error { calls++; return nil }
+	t.Cleanup(func() { install = realInstall })
+
+	changed, err := SetListenHostFile(plistPath, "0.0.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("first SetListenHostFile should report changed")
+	}
+	text, _ := os.ReadFile(plistPath)
+	if !strings.Contains(string(text), "<string>0.0.0.0:8080</string>") {
+		t.Errorf("plist should listen on 0.0.0.0:8080, got:\n%s", text)
+	}
+
+	changed, err = SetListenHostFile(plistPath, "0.0.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("SetListenHostFile on the same host should not report changed")
+	}
+
+	if calls != 0 {
+		t.Errorf("SetListenHostFile must not reload the service, install called %d times", calls)
+	}
+}
+
 func TestSetListenHost_Malformed(t *testing.T) {
 	dir := t.TempDir()
 	plistPath := filepath.Join(dir, "bad.plist")
@@ -267,6 +302,58 @@ func TestStatus_NotInstalledIsError(t *testing.T) {
 	_, err := statusByLabel("com.local.llamawizard-test-nonexistent")
 	if err == nil {
 		t.Error("Status on nonexistent service should return an error")
+	}
+}
+
+func TestLoaded_TracksInstallAndStop(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "test.plist")
+
+	dummyBin := filepath.Join(tmpDir, "dummy.sh")
+	if err := os.WriteFile(dummyBin, []byte("#!/bin/sh\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	data := plistData{
+		Label:      testLabel,
+		BinaryPath: dummyBin,
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		Port:       "8080",
+		LogDir:     tmpDir,
+		WorkDir:    tmpDir,
+	}
+	f, err := os.Create(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plistTmpl.Execute(f, data); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	t.Cleanup(func() {
+		_ = stopByLabel(testLabel)
+		_ = os.Remove(plistPath)
+	})
+
+	_ = stopByLabel(testLabel) // clean slate
+	if loadedByLabel(testLabel) {
+		t.Fatal("service should not be loaded before install")
+	}
+
+	if err := installWithLabel(plistPath, testLabel); err != nil {
+		t.Fatal(err)
+	}
+	if !loadedByLabel(testLabel) {
+		t.Fatal("service should be loaded after install")
+	}
+
+	if err := stopByLabel(testLabel); err != nil {
+		t.Fatal(err)
+	}
+	if loadedByLabel(testLabel) {
+		t.Fatal("service should not be loaded after stop")
 	}
 }
 
