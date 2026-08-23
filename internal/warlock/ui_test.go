@@ -235,6 +235,17 @@ func TestCompositeField(t *testing.T) {
 	}
 }
 
+// countRestartEvents counts "restart" events in evs.
+func countRestartEvents(evs []Event) int {
+	n := 0
+	for _, e := range evs {
+		if e.Kind == "restart" {
+			n++
+		}
+	}
+	return n
+}
+
 // stripANSI removes ANSI escape sequences from s.
 func stripANSI(s string) string {
 	var sb strings.Builder
@@ -314,6 +325,20 @@ func TestUIRestartKey(t *testing.T) {
 	}
 	if started != m.mon.PlistPath {
 		t.Errorf("Start called with %q, want %q", started, m.mon.PlistPath)
+	}
+
+	// While the restart is in flight (restartDoneMsg not yet handled),
+	// hammering "a" must not queue another kickstart or duplicate the
+	// restart event.
+	restarts := countRestartEvents(m.mon.Events())
+	for i := 0; i < 3; i++ {
+		m, cmd = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+		if cmd != nil {
+			t.Fatalf("a while in flight returned cmd %v, want nil", cmd)
+		}
+	}
+	if got := countRestartEvents(m.mon.Events()); got != restarts {
+		t.Errorf("restart events = %d, want %d (no duplicates)", got, restarts)
 	}
 
 	// FinishRestart records the outcome.

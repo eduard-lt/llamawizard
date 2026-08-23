@@ -132,6 +132,11 @@ func (m *Monitor) State() ServiceState {
 	return m.state
 }
 
+// InFlight reports whether a restart is currently in flight.
+func (m *Monitor) InFlight() bool {
+	return m.inFlight
+}
+
 // Events returns a copy of the event ring, oldest first.
 func (m *Monitor) Events() []Event {
 	out := make([]Event, len(m.events))

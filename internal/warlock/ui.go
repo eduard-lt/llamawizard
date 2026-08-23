@@ -127,6 +127,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mon.SetAutoRestart(!m.mon.AutoRestart())
 			return m, nil
 		case "a":
+			// Ignore the key while a restart is in flight: hammering "a"
+			// would otherwise queue duplicate kickstarts and duplicate
+			// "restart issued" events.
+			if m.mon.InFlight() {
+				return m, nil
+			}
 			m.mon.BeginRestart(time.Now())
 			return m, m.restartCmd()
 		}
