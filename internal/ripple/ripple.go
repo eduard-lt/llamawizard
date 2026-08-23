@@ -20,10 +20,10 @@ type drop struct {
 
 // Model holds the state of the ripple rain animation.
 type Model struct {
-	drops    []drop
-	rng      *rand.Rand
-	width    int
-	height   int
+	drops  []drop
+	rng    *rand.Rand
+	width  int
+	height int
 }
 
 var rippleChars = []rune{' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'}

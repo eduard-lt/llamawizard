@@ -105,7 +105,7 @@ func TestMonitorLifecycle(t *testing.T) {
 	if m.WantsRestart(now) {
 		t.Error("WantsRestart should be false while a restart is in flight")
 	}
-	m.Start(m.PlistPath)
+	_ = m.Start(m.PlistPath)
 	if len(startCalls) != 1 || startCalls[0] != "/tmp/plist.plist" {
 		t.Errorf("startCalls = %v", startCalls)
 	}
@@ -127,7 +127,7 @@ func TestMonitorLifecycle(t *testing.T) {
 
 	// Failed restart: the event carries only the first line of the error.
 	m.BeginRestart(now)
-	m.Start(m.PlistPath)
+	_ = m.Start(m.PlistPath)
 	m.FinishRestart(errors.New("bootstrap: exit status 113\nsecond line"), now)
 	evs = m.Events()
 	last = evs[len(evs)-1]

@@ -22,13 +22,6 @@ import (
 	"github.com/eduard-lt/llamawizard/internal/state"
 )
 
-// Poll cadences for the dashboard.
-const (
-	statusPollInterval = 2 * time.Second
-	logPollInterval    = 3 * time.Second
-	resPollInterval    = 5 * time.Second
-)
-
 // Minimum terminal size before the dashboard renders.
 const (
 	minWidth  = 80
@@ -279,7 +272,7 @@ func egressIP() string {
 	if err != nil {
 		return ""
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if ua, ok := conn.LocalAddr().(*net.UDPAddr); ok {
 		if ip4 := ua.IP.To4(); ip4 != nil {
 			return ip4.String()
@@ -301,7 +294,10 @@ func stateLine(out string) string {
 // cell is one terminal cell of the stats block: a rune plus the ANSI
 // foreground code to render it with. A zero rune (or a space) is
 // transparent — the rain shows through.
-type cell struct{ r rune; fg string }
+type cell struct {
+	r  rune
+	fg string
+}
 
 // seg is a run of text in one foreground color.
 type seg struct {
