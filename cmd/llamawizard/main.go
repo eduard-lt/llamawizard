@@ -36,57 +36,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Warning: model slug migration failed: %v\n", err)
 	}
 
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "status":
-			runStatus()
-			return
-		case "start":
-			runStart()
-			return
-		case "stop":
-			runStop()
-			return
-		case "restart":
-			runRestart()
-			return
-		case "warlock":
-			runWarlock(os.Args[2:])
-			return
-		case "doctor":
-			runDoctor()
-			return
-		case "logs":
-			runLogsCmd(os.Args[2:])
-			return
-		case "uninstall":
-			runUninstall()
-			return
-		case "models":
-			runModels(os.Args[2:])
-			return
-		case "config":
-			runConfig(os.Args[2:])
-			return
-		case "pi":
-			runPi(os.Args[2:])
-			return
-		case "version", "--version", "-v":
-			runVersion()
-			return
-		case "update":
-			runUpdate()
-			return
-		case "help", "-h", "--help":
-			if len(os.Args) > 2 {
-				printCommandHelp(os.Args[2])
-			} else {
-				printHelp()
-			}
-			return
-		}
+	path, rest, wizard, err := resolve(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
+	if wizard {
+		runWizard()
+		return
+	}
+	runResolved(path, rest)
+}
 
+// runWizard launches the interactive setup wizard, preceded by the
+// non-blocking update check.
+func runWizard() {
 	checkForUpdates()
 
 	p := tea.NewProgram(wizard.InitialModel(version), tea.WithAltScreen())
@@ -194,7 +158,10 @@ Examples:
   llamawizard logs -f`)
 }
 
-func printCommandHelp(cmd string) {
+// printCommandHelp prints help for a single command. It reports whether
+// the command is known; unknown commands get an error (with a "Did you
+// mean" suggestion when one is close) on stderr instead.
+func printCommandHelp(cmd string) bool {
 	switch cmd {
 	case "status":
 		fmt.Println("llamawizard status — Show service status, installed models, and health check.")
@@ -238,6 +205,10 @@ func printCommandHelp(cmd string) {
 			"help":    "Show this help",
 		}[cmd])
 	default:
-		fmt.Printf("Unknown command: %s\nRun 'llamawizard help' for usage.\n", cmd)
+		suggestion := didYouMean(cmd, commandNames(commandTree), 2)
+		fmt.Fprintln(os.Stderr, unknownCommandError(
+			fmt.Sprintf("command '%s'", cmd), suggestion, "help"))
+		return false
 	}
+	return true
 }
