@@ -131,6 +131,8 @@ func runResolved(path string, rest []string) {
 		runConfig(rest)
 	case "pi":
 		runPi(rest)
+	case "completion":
+		runCompletion(rest)
 	case "version":
 		runVersion()
 	case "update":

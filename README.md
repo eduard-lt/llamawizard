@@ -23,6 +23,7 @@ After setup, it doubles as an ongoing management tool: start, stop, restart, sta
 - [Install](#install)
 - [What the wizard does](#what-the-wizard-does)
 - [Commands](#commands)
+- [Shell completion](#shell-completion)
 - [Architecture](#architecture)
 - [Files on disk](#files-on-disk)
 - [Troubleshooting](#troubleshooting)
@@ -203,6 +204,28 @@ Notes on commands whose behavior isn't obvious from the name alone:
 - **`models remove`** deletes the entry from `state.json`, regenerates the llama-swap config, and restarts the service — but leaves the model file untouched on disk. Use **`models delete`** if you also want the file gone.
 - **`uninstall`** is interactive and asks for confirmation before stopping the service, removing the LaunchAgent plist, and deleting `state.json`. Model files and the config directory are left in place for manual cleanup.
 - **`logs`** prints the last 30 lines of both `llama-swap.log` and `llama-swap-error.log`; use `tail -f` yourself for live following.
+
+## Shell completion
+
+Append the completion script for your shell to your shell's rc file. It covers all commands, aliases, subcommands, and flags.
+
+**bash** — append to `~/.bashrc`, then run `source ~/.bashrc`:
+
+```bash
+llamawizard completion bash >> ~/.bashrc
+```
+
+**zsh** (macOS default) — append to `~/.zshrc`, then run `exec zsh`:
+
+```zsh
+llamawizard completion zsh >> ~/.zshrc
+```
+
+**fish** — append to `~/.config/fish/config.fish`:
+
+```fish
+llamawizard completion fish >> ~/.config/fish/config.fish
+```
 
 ## Architecture
 

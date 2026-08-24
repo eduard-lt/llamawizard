@@ -32,6 +32,9 @@ var commandTree = []*command{
 	{Name: "pi", Children: []*command{
 		{Name: "install"}, {Name: "uninstall"},
 	}},
+	{Name: "completion", Children: []*command{
+		{Name: "bash"}, {Name: "zsh"}, {Name: "fish"},
+	}},
 	{Name: "update", Aliases: []string{"up"}},
 	{Name: "uninstall"},
 	{Name: "version", Aliases: []string{"v"}},
