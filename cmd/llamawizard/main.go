@@ -109,53 +109,56 @@ func checkForUpdates() {
 
 func printHelp() {
 	fmt.Println(`llamawizard — local LLM stack manager
-
 USAGE
   llamawizard [command] [flags]
-
-  Running with no command launches the interactive setup wizard.
+  Running with NO arguments launches the interactive setup wizard.
+  Unrecognized commands print an error + suggestion — they never fall through to the wizard.
 
 CORE
-  status                    Show service status and health
-  doctor                    Run a full health check
-  logs [-f] [-n <N>]        Show recent service logs (-f follow, -n lines)
+  status, st                 Show service status and health
+  doctor, dr                 Run a full health check
+  logs, lg [-f] [-n <N>]     Show recent service logs (-f follow, -n lines)
 
 SERVICE
-  start                     Start the llama-swap service
-  stop                      Stop the llama-swap service
-  restart                   Restart the llama-swap service
+  start                      Start the llama-swap service
+  stop                       Stop the llama-swap service
+  restart, re                Restart the llama-swap service
 
 GUARD
-  warlock [--no-lan]        Live dashboard + auto-restart; LAN access while open
+  warlock, wl [--no-lan]     Live dashboard + auto-restart; LAN access while open
 
-MODELS
-  models list                        List configured models
-  models add                         Add a model (interactive)
-  models add --link <url> [name]     Add a model from a link (file or repo page)
-  models add --link                  Open a guided tutorial for link formats
-  models show <name>                 Show a model's config and file path
-  models remove <name>               Remove from config only (keeps file on disk)
-  models delete <name> [--yes]       Remove from config AND delete the file
+MODELS  (alias: m)
+  models list, m ls                      List configured models
+  models add, m a                        Add a model (interactive)
+  models add --link <url> [name]         Add a model from a link (file or repo page)
+  models add --link                      Open a guided tutorial for link formats
+  models show <name>, m sh <name>        Show a model's config and file path
+  models remove <name>, m rm <name>      Remove from config only (keeps file on disk)
+  models delete <name> [--yes]           Remove from config AND delete the file (no shorthand — destructive)
 
-CONFIG
-  config show                        Print the active config
-  config path                        Print config file location
+CONFIG  (alias: cfg)
+  config show, cfg sh                    Print the active config
+  config path, cfg p                     Print config file location
 
 OPTIONAL
-  pi install                         Install and configure pi coding agent
-  pi uninstall                       Uninstall pi coding agent
+  pi install                 Install and configure pi coding agent
+  pi uninstall                Uninstall pi coding agent
+
+SHELL
+  completion <bash|zsh|fish>  Print shell completion script (see docs for setup)
 
 MAINTENANCE
-  update                    Check for and install updates
-  uninstall                 Stop service and remove LaunchAgent
-  version                   Show versions (llamawizard, llama.cpp, llama-swap)
-  help [command]            Show help (or help for a specific command)
+  update, up                 Check for and install updates
+  uninstall                  Stop service and remove LaunchAgent (no shorthand — destructive)
+  version, v                 Show versions (llamawizard, llama.cpp, llama-swap)
+  help, h [command]          Show help (or help for a specific command)
 
 Examples:
-  llamawizard models add --link https://huggingface.co/unsloth/Qwen3.8-27B-GGUF
-  llamawizard models add --link https://example.com/model.gguf my-model
+  llamawizard m a --link https://huggingface.co/unsloth/Qwen3.8-27B-GGUF
+  llamawizard m a --link https://example.com/model.gguf my-model
   llamawizard models delete qwen3 --yes
-  llamawizard logs -f`)
+  llamawizard lg -f
+  llamawizard completion zsh >> ~/.zshrc`)
 }
 
 // printCommandHelp prints help for a single command. It reports whether
@@ -180,17 +183,21 @@ func printCommandHelp(cmd string) bool {
 		fmt.Println("  q quit · r toggle auto-restart · a restart now")
 	case "models":
 		fmt.Println("llamawizard models <list|add|show|remove|delete> — Manage models.")
-		fmt.Println("  models list                 List configured models")
-		fmt.Println("  models add                  Add a model interactively")
-		fmt.Println("  models add --link <url>     Add from a link (direct .gguf or HF repo page)")
-		fmt.Println("  models add --link           Open a guided tutorial for link formats")
-		fmt.Println("  models show <name>          Show model details")
-		fmt.Println("  models remove <name>        Remove from config (keeps file)")
-		fmt.Println("  models delete <name> --yes  Remove config and delete file")
+		fmt.Println("  models list (m ls)              List configured models")
+		fmt.Println("  models add (m a)                Add a model interactively")
+		fmt.Println("  models add --link <url>         Add from a link (direct .gguf or HF repo page)")
+		fmt.Println("  models add --link               Open a guided tutorial for link formats")
+		fmt.Println("  models show <name> (m sh)       Show model details")
+		fmt.Println("  models remove <name> (m rm)     Remove from config (keeps file)")
+		fmt.Println("  models delete <name> --yes      Remove config and delete file (no shorthand)")
 	case "config":
 		fmt.Println("llamawizard config <show|path> — View configuration.")
-		fmt.Println("  config show   Print the active llama-swap config")
-		fmt.Println("  config path   Print config file location")
+		fmt.Println("  config show (cfg sh)   Print the active llama-swap config")
+		fmt.Println("  config path (cfg p)    Print config file location")
+	case "completion":
+		fmt.Println("llamawizard completion <bash|zsh|fish> — Print a shell completion script.")
+		fmt.Println("  Append the output to your shell rc file, e.g.:")
+		fmt.Println("    llamawizard completion zsh >> ~/.zshrc")
 	case "pi":
 		fmt.Println("llamawizard pi <install|uninstall> — Manage pi coding agent.")
 		fmt.Println("  pi install    Install and configure pi for local models")

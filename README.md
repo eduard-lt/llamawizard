@@ -179,21 +179,28 @@ Running `llamawizard` with no arguments walks through every step:
 | Command | Description |
 | --- | --- |
 | `llamawizard` | Launch the setup wizard |
-| `llamawizard status` | Show service status and health |
+| `llamawizard status`, `st` | Show service status and health |
 | `llamawizard start` | Start the llama-swap service |
 | `llamawizard stop` | Stop the llama-swap service |
-| `llamawizard restart` | Restart the llama-swap service |
-| `llamawizard warlock` | Live service guardian: rain dashboard (logs, events, RAM) with automatic restart; opens LAN access while open |
-| `llamawizard doctor` | Run a standalone health check |
-| `llamawizard logs` | Show recent service logs |
-| `llamawizard models add` | Add a model (interactive) |
+| `llamawizard restart`, `re` | Restart the llama-swap service |
+| `llamawizard warlock`, `wl` | Live service guardian: rain dashboard (logs, events, RAM) with automatic restart; opens LAN access while open |
+| `llamawizard doctor`, `dr` | Run a standalone health check |
+| `llamawizard logs`, `lg` | Show recent service logs (`-f` follow, `-n <N>` lines) |
+| `llamawizard models list`, `m ls` | List configured models |
+| `llamawizard models add`, `m a` | Add a model (interactive) |
 | `llamawizard models add --link <url> [--name <name>]` | Add a model from a direct download URL |
-| `llamawizard models remove` | Remove a model **from config only** — file stays on disk |
-| `llamawizard models delete` | Remove a model from config **and delete its file** |
-| `llamawizard uninstall` | Stop service and remove LaunchAgent |
-| `llamawizard update` | Check for and install updates |
-| `llamawizard version` | Show versions of llamawizard, llama.cpp, and llama-swap |
-| `llamawizard help` | Show a command reference |
+| `llamawizard models show`, `m sh <name>` | Show a model's config and file path |
+| `llamawizard models remove`, `m rm <name>` | Remove a model **from config only** — file stays on disk |
+| `llamawizard models delete <name> [--yes]` | Remove a model from config **and delete its file** (no shorthand) |
+| `llamawizard config show`, `cfg sh` | Print the active config |
+| `llamawizard config path`, `cfg p` | Print config file location |
+| `llamawizard pi install` | Install and configure pi coding agent |
+| `llamawizard pi uninstall` | Uninstall pi coding agent |
+| `llamawizard completion <bash\|zsh\|fish>` | Print shell completion script (setup in *Shell completion*) |
+| `llamawizard update`, `up` | Check for and install updates |
+| `llamawizard uninstall` | Stop service and remove LaunchAgent (no shorthand) |
+| `llamawizard version`, `v` | Show versions of llamawizard, llama.cpp, and llama-swap |
+| `llamawizard help`, `h [command]` | Show a command reference |
 
 Notes on commands whose behavior isn't obvious from the name alone:
 
