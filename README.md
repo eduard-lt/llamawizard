@@ -23,6 +23,7 @@ After setup, it doubles as an ongoing management tool: start, stop, restart, sta
 - [Install](#install)
 - [What the wizard does](#what-the-wizard-does)
 - [Commands](#commands)
+- [Shell completion](#shell-completion)
 - [Architecture](#architecture)
 - [Files on disk](#files-on-disk)
 - [Troubleshooting](#troubleshooting)
@@ -178,21 +179,28 @@ Running `llamawizard` with no arguments walks through every step:
 | Command | Description |
 | --- | --- |
 | `llamawizard` | Launch the setup wizard |
-| `llamawizard status` | Show service status and health |
+| `llamawizard status`, `st` | Show service status and health |
 | `llamawizard start` | Start the llama-swap service |
 | `llamawizard stop` | Stop the llama-swap service |
-| `llamawizard restart` | Restart the llama-swap service |
-| `llamawizard warlock` | Live service guardian: rain dashboard (logs, events, RAM) with automatic restart; opens LAN access while open |
-| `llamawizard doctor` | Run a standalone health check |
-| `llamawizard logs` | Show recent service logs |
-| `llamawizard models add` | Add a model (interactive) |
+| `llamawizard restart`, `re` | Restart the llama-swap service |
+| `llamawizard warlock`, `wl` | Live service guardian: rain dashboard (logs, events, RAM) with automatic restart; opens LAN access while open |
+| `llamawizard doctor`, `dr` | Run a standalone health check |
+| `llamawizard logs`, `lg` | Show recent service logs (`-f` follow, `-n <N>` lines) |
+| `llamawizard models list`, `m ls` | List configured models |
+| `llamawizard models add`, `m a` | Add a model (interactive) |
 | `llamawizard models add --link <url> [--name <name>]` | Add a model from a direct download URL |
-| `llamawizard models remove` | Remove a model **from config only** — file stays on disk |
-| `llamawizard models delete` | Remove a model from config **and delete its file** |
-| `llamawizard uninstall` | Stop service and remove LaunchAgent |
-| `llamawizard update` | Check for and install updates |
-| `llamawizard version` | Show versions of llamawizard, llama.cpp, and llama-swap |
-| `llamawizard help` | Show a command reference |
+| `llamawizard models show`, `m sh <name>` | Show a model's config and file path |
+| `llamawizard models remove`, `m rm <name>` | Remove a model **from config only** — file stays on disk |
+| `llamawizard models delete <name> [--yes]` | Remove a model from config **and delete its file** (no shorthand) |
+| `llamawizard config show`, `cfg sh` | Print the active config |
+| `llamawizard config path`, `cfg p` | Print config file location |
+| `llamawizard pi install` | Install and configure pi coding agent |
+| `llamawizard pi uninstall` | Uninstall pi coding agent |
+| `llamawizard completion <bash\|zsh\|fish>` | Print shell completion script (setup in *Shell completion*) |
+| `llamawizard update`, `up` | Check for and install updates |
+| `llamawizard uninstall` | Stop service and remove LaunchAgent (no shorthand) |
+| `llamawizard version`, `v` | Show versions of llamawizard, llama.cpp, and llama-swap |
+| `llamawizard help`, `h [command]` | Show a command reference |
 
 Notes on commands whose behavior isn't obvious from the name alone:
 
@@ -203,6 +211,28 @@ Notes on commands whose behavior isn't obvious from the name alone:
 - **`models remove`** deletes the entry from `state.json`, regenerates the llama-swap config, and restarts the service — but leaves the model file untouched on disk. Use **`models delete`** if you also want the file gone.
 - **`uninstall`** is interactive and asks for confirmation before stopping the service, removing the LaunchAgent plist, and deleting `state.json`. Model files and the config directory are left in place for manual cleanup.
 - **`logs`** prints the last 30 lines of both `llama-swap.log` and `llama-swap-error.log`; use `tail -f` yourself for live following.
+
+## Shell completion
+
+Append the completion script for your shell to your shell's rc file. It covers all commands, aliases, subcommands, and flags.
+
+**bash** — append to `~/.bashrc`, then run `source ~/.bashrc`:
+
+```bash
+llamawizard completion bash >> ~/.bashrc
+```
+
+**zsh** (macOS default) — append to `~/.zshrc`, then run `exec zsh`:
+
+```zsh
+llamawizard completion zsh >> ~/.zshrc
+```
+
+**fish** — append to `~/.config/fish/config.fish`:
+
+```fish
+llamawizard completion fish >> ~/.config/fish/config.fish
+```
 
 ## Architecture
 
