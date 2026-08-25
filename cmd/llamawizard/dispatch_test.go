@@ -1,6 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -175,5 +180,66 @@ func TestResolve_NounWithoutSubcommand(t *testing.T) {
 	}
 	if len(rest) != 0 {
 		t.Errorf("rest = %v, want empty", rest)
+	}
+}
+
+// buildTestBinary compiles the CLI so the test can exercise the real
+// resolve -> runResolved -> run-function chain end to end.
+func buildTestBinary(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "llamawizard")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("building test binary: %v\n%s", err, out)
+	}
+	return bin
+}
+
+// Integration counterpart of TestResolve_NounWithoutSubcommand: when a noun
+// with subcommands is given bare (e.g. `llamawizard models`), resolve
+// returns (noun, [], false, nil) and runResolved dispatches to the noun's
+// run function with an empty rest. That function must print its usage and
+// exit 1 — a bare noun must never panic or fall through to the wizard.
+func TestNounWithoutSubcommand_PrintsUsageAndExits(t *testing.T) {
+	bin := buildTestBinary(t)
+	home := t.TempDir() // isolate state/config so the binary touches nothing real
+
+	cases := []struct {
+		args    []string
+		wantOut string // substring that must appear on stdout
+		wantErr string // substring that must appear on stderr
+	}{
+		{[]string{"models"}, "Usage: llamawizard models <list|add|show|remove|delete>", ""},
+		{[]string{"m"}, "Usage: llamawizard models <list|add|show|remove|delete>", ""},
+		{[]string{"config"}, "Usage: llamawizard config <show|path>", ""},
+		{[]string{"cfg"}, "Usage: llamawizard config <show|path>", ""},
+		{[]string{"pi"}, "Usage: llamawizard pi <install|uninstall>", ""},
+		{[]string{"completion"}, "", "Usage: llamawizard completion <bash|zsh|fish>"},
+	}
+
+	for _, c := range cases {
+		t.Run(strings.Join(c.args, "_"), func(t *testing.T) {
+			cmd := exec.Command(bin, c.args...)
+			cmd.Env = append(os.Environ(), "HOME="+home)
+			var out, errb bytes.Buffer
+			cmd.Stdout = &out
+			cmd.Stderr = &errb
+			err := cmd.Run()
+
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("expected clean exit, got %v\nstdout: %s\nstderr: %s", err, out.String(), errb.String())
+			}
+			// A panic would surface as a non-1 exit code (2) with a stack
+			// trace, so asserting exactly 1 is the no-panic guarantee.
+			if exitErr.ExitCode() != 1 {
+				t.Fatalf("exit code = %d, want 1\nstdout: %s\nstderr: %s", exitErr.ExitCode(), out.String(), errb.String())
+			}
+			if c.wantOut != "" && !strings.Contains(out.String(), c.wantOut) {
+				t.Errorf("stdout %q missing %q", out.String(), c.wantOut)
+			}
+			if c.wantErr != "" && !strings.Contains(errb.String(), c.wantErr) {
+				t.Errorf("stderr %q missing %q", errb.String(), c.wantErr)
+			}
+		})
 	}
 }
