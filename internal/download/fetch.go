@@ -74,7 +74,33 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 }
 
 func downloadFromURL(client *http.Client, url string, useHFToken bool, f RemoteFile, destDir string, progress chan<- Progress) error {
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	if err := ValidateArtifact(f.Filename); err != nil {
+		return err
+	}
+	if !filepath.IsLocal(f.Filename) || f.Filename == "." {
+		return fmt.Errorf("unsafe download filename %q", f.Filename)
+	}
+	destDir = filepath.Clean(destDir)
+	// Reject symlinks in the destination tree and files before opening them.
+	for path := filepath.Join(destDir, f.Filename+".partial"); ; path = filepath.Dir(path) {
+		st, err := os.Lstat(path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err == nil && st.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing symlink %s", path)
+		}
+		if path == destDir {
+			break
+		}
+		if filepath.Dir(path) == path {
+			return fmt.Errorf("invalid destination")
+		}
+	}
+	if st, err := os.Lstat(filepath.Join(destDir, f.Filename)); err == nil && !st.Mode().IsRegular() {
+		return fmt.Errorf("destination is not a regular file")
+	}
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(destDir, f.Filename)), 0o755); err != nil {
 		return fmt.Errorf("creating dest dir: %w", err)
 	}
 
@@ -100,6 +126,12 @@ func downloadFromURL(client *http.Client, url string, useHFToken bool, f RemoteF
 		offset = stat.Size()
 	}
 
+	if f.Size > 0 && offset >= f.Size {
+		if offset == f.Size {
+			return os.Rename(partialPath, finalPath)
+		}
+		offset = 0
+	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)
@@ -120,7 +152,7 @@ func downloadFromURL(client *http.Client, url string, useHFToken bool, f RemoteF
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("download returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -131,6 +163,16 @@ func downloadFromURL(client *http.Client, url string, useHFToken bool, f RemoteF
 		offset = 0
 	}
 
+	if resp.StatusCode == http.StatusPartialContent {
+		var start, end, total int64
+		n, scanErr := fmt.Sscanf(resp.Header.Get("Content-Range"), "bytes %d-%d/%d", &start, &end, &total)
+		if scanErr != nil || n != 3 || start != offset || end < start || total <= end || (f.Size > 0 && total != f.Size) {
+			return fmt.Errorf("invalid resume Content-Range %q", resp.Header.Get("Content-Range"))
+		}
+		if f.Size == 0 {
+			f.Size = total
+		}
+	}
 	// Open .partial for writing (create or append).
 	flags := os.O_CREATE | os.O_WRONLY
 	if offset > 0 {
@@ -179,6 +221,12 @@ func downloadFromURL(client *http.Client, url string, useHFToken bool, f RemoteF
 		return fmt.Errorf("size mismatch: expected %d bytes, got %d (file may be truncated)", f.Size, totalDownloaded)
 	}
 
+	if err := fw.Sync(); err != nil {
+		return err
+	}
+	if err := fw.Close(); err != nil {
+		return err
+	}
 	// Atomic rename from .partial to final filename.
 	if err := os.Rename(partialPath, finalPath); err != nil {
 		return fmt.Errorf("renaming partial to final: %w", err)

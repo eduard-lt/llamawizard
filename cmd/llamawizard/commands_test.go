@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/eduard-lt/llamawizard/internal/state"
@@ -124,29 +123,6 @@ func TestDeriveSlugIncludesQuant(t *testing.T) {
 		if got := deriveSlug(c.name, c.filename); got != c.want {
 			t.Errorf("deriveSlug(%q, %q) = %q, want %q", c.name, c.filename, got, c.want)
 		}
-	}
-}
-
-func TestNormalizeSlug(t *testing.T) {
-	cases := map[string]string{
-		"qwen3.6-27b":         "qwen3.6-27b-q4-k-m",
-		"qwen3.8-27b-q5-k-xl": "qwen3.8-27b-q5-k-xl", // already has quant
-	}
-	for slug, want := range cases {
-		quant := "Q4_K_M"
-		if strings.Contains(slug, "q5-k-xl") {
-			quant = "Q5_K_XL"
-		}
-		if got := normalizeSlug(slug, quant); got != want {
-			t.Errorf("normalizeSlug(%q, %q) = %q, want %q", slug, quant, got, want)
-		}
-	}
-
-	if got := normalizeSlug("foo", "custom"); got != "foo" {
-		t.Errorf("normalizeSlug(foo, custom) = %q, want foo", got)
-	}
-	if got := normalizeSlug("foo", ""); got != "foo" {
-		t.Errorf("normalizeSlug(foo, empty) = %q, want foo", got)
 	}
 }
 

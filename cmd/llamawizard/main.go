@@ -30,11 +30,6 @@ func init() {
 }
 
 func main() {
-	// Normalize model slugs (ensure each includes its quantization) and repair
-	// any duplicates. No-op unless changes are needed.
-	if err := migrateSlugs(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: model slug migration failed: %v\n", err)
-	}
 
 	path, rest, wizard, err := resolve(os.Args[1:])
 	if err != nil {
@@ -137,6 +132,7 @@ MODELS  (alias: m)
   models delete <name> [--yes]           Remove from config AND delete the file (no shorthand — destructive)
 
 CONFIG  (alias: cfg)
+  config apply [--dry-run] [--default ID] Sync master config and verify service readiness
   config show, cfg sh                    Print the active config
   config path, cfg p                     Print config file location
 
@@ -191,7 +187,8 @@ func printCommandHelp(cmd string) bool {
 		fmt.Println("  models remove <name> (m rm)     Remove from config (keeps file)")
 		fmt.Println("  models delete <name> --yes      Remove config and delete file (no shorthand)")
 	case "config":
-		fmt.Println("llamawizard config <show|path> — View configuration.")
+		fmt.Println("llamawizard config <show|path|apply> — View configuration.")
+		fmt.Println("  config apply [--dry-run] [--default ID]   Apply master config, preserve customizations")
 		fmt.Println("  config show (cfg sh)   Print the active llama-swap config")
 		fmt.Println("  config path (cfg p)    Print config file location")
 	case "completion":

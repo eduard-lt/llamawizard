@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased — planned 0.1.8
+
+- Separate the current Pi default from local model choices, scroll long lists, and fit setup summaries to smaller terminals.
+- Support `-help` and help flags on nested commands without executing them; show custom profiles in model listing and inspection.
+- Retry failed service checks instead of showing setup complete, and clarify setup navigation and API-key preservation.
+- Preserve edited llama-swap profiles, aliases, context sizes, and unknown YAML fields when adding models.
+- Add `config apply` with preview, backups, Pi merging, and authenticated API readiness checks.
+- Preserve Pi-only models, other providers, advanced options, and user settings; synchronize shared names, contexts, and keys.
+- Save final setup port, credentials, and binary paths; avoid premature config writes.
+- Restart loaded services with kickstart and bootstrap stopped services with retries.
+- Reject unsafe model directories and deletion of model files referenced by another profile.
+- Reject unsupported split GGUF downloads before registering an incomplete model; validate resume offsets and support nested paths.
+- Remove automatic slug migrations from command startup.
+- Replace real Homebrew installation in unit tests, isolate launchd integration tests, and add regression and CLI end-to-end coverage.
+- Add customization, recovery, testing, and discoverability documentation.
+
+
 ### Bug Fixes
 
 - Correct formatting in releasing documentation (675cf9a)
@@ -29,4 +46,3 @@ All notable changes to this project will be documented in this file.
 - Check syscall.Exec return value for lint compliance (720d1dc)
 - Update installation commands to use the correct repository path (5e88d3d)
 - Improve update handling and restart mechanism (3d6c9b3)
-

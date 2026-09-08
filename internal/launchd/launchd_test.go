@@ -2,6 +2,7 @@ package launchd
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,6 +25,7 @@ func TestSpecForLabel(t *testing.T) {
 }
 
 func TestWritePlist_CreatesFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 	binaryPath := "/usr/bin/true"
 	configPath := filepath.Join(tmpDir, "config.yaml")
@@ -266,6 +268,9 @@ func TestSetListenHost_Malformed(t *testing.T) {
 }
 
 func TestUninstall_RemovesPlist(t *testing.T) {
+	old := launchCommand
+	t.Cleanup(func() { launchCommand = old })
+	launchCommand = func(_ string, _ ...string) *exec.Cmd { return exec.Command("/usr/bin/true") }
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, PlistName)
 	if err := os.WriteFile(plistPath, []byte("<plist/>\n"), 0o644); err != nil {
@@ -306,6 +311,9 @@ func TestStatus_NotInstalledIsError(t *testing.T) {
 }
 
 func TestLoaded_TracksInstallAndStop(t *testing.T) {
+	if os.Getenv("LLAMAWIZARD_LAUNCHD_TESTS") != "1" {
+		t.Skip("opt-in launchd integration: LLAMAWIZARD_LAUNCHD_TESTS=1")
+	}
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, "test.plist")
 
@@ -360,6 +368,9 @@ func TestLoaded_TracksInstallAndStop(t *testing.T) {
 const testLabel = "com.local.llamawizard-test"
 
 func TestLifecycle_RoundTrip(t *testing.T) {
+	if os.Getenv("LLAMAWIZARD_LAUNCHD_TESTS") != "1" {
+		t.Skip("opt-in launchd integration: LLAMAWIZARD_LAUNCHD_TESTS=1")
+	}
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, "test.plist")
 
@@ -466,4 +477,38 @@ func TestLifecycle_RoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestRestartUsesKickstartWithoutBootout(t *testing.T) {
+	old := launchCommand
+	t.Cleanup(func() { launchCommand = old })
+	var calls []string
+	launchCommand = func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, strings.Join(args, " "))
+		return exec.Command("/usr/bin/true")
+	}
+	if err := Restart("/test.plist"); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || !strings.HasPrefix(calls[0], "enable ") || !strings.HasPrefix(calls[1], "kickstart -k ") {
+		t.Fatalf("%v", calls)
+	}
+}
+func TestStartBootstrapsThenKickstarts(t *testing.T) {
+	old := launchCommand
+	t.Cleanup(func() { launchCommand = old })
+	var calls []string
+	launchCommand = func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, strings.Join(args, " "))
+		if len(calls) == 2 {
+			return exec.Command("/usr/bin/false")
+		}
+		return exec.Command("/usr/bin/true")
+	}
+	if err := Start("/test.plist"); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 4 || !strings.HasPrefix(calls[2], "bootstrap ") || !strings.HasPrefix(calls[3], "kickstart ") {
+		t.Fatalf("%v", calls)
+	}
 }

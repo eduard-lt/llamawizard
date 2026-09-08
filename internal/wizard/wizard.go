@@ -3,7 +3,6 @@ package wizard
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,8 +12,10 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/eduard-lt/llamawizard/internal/build"
+	"github.com/eduard-lt/llamawizard/internal/configsync"
 	"github.com/eduard-lt/llamawizard/internal/download"
 	"github.com/eduard-lt/llamawizard/internal/hardware"
 	"github.com/eduard-lt/llamawizard/internal/health"
@@ -23,6 +24,7 @@ import (
 	"github.com/eduard-lt/llamawizard/internal/network"
 	"github.com/eduard-lt/llamawizard/internal/pi"
 	"github.com/eduard-lt/llamawizard/internal/ripple"
+	"github.com/eduard-lt/llamawizard/internal/service"
 	"github.com/eduard-lt/llamawizard/internal/state"
 	"github.com/eduard-lt/llamawizard/internal/whichllm"
 )
@@ -229,11 +231,12 @@ type Model struct {
 	addOnly bool
 	version string
 
-	piOptIn       bool
-	piSetupDone   bool
-	piErr         error
-	piDefaultSlug string
-	piDefaultIdx  int
+	piOptIn          bool
+	piSetupDone      bool
+	piErr            error
+	piDefaultSlug    string
+	piDefaultIdx     int
+	piCurrentDefault string
 }
 
 func InitialModel(version string) Model {
@@ -275,27 +278,36 @@ func InitialModel(version string) Model {
 	}
 
 	m := Model{
-		Screen:         ScreenWelcome,
-		rip:            ripple.New(),
-		spinner:        sp,
-		portInput:      portTI,
-		keyInput:       ki,
-		buildVp:        buildVp,
-		modelVp:        modelVp,
-		selected:       make(map[int]bool),
-		port:           8080,
-		apiKey:         "dummy",
-		installedSlugs: installedSlugs,
-		piOptIn:        piOptIn,
-		version:        version,
+		Screen:           ScreenWelcome,
+		rip:              ripple.New(),
+		spinner:          sp,
+		portInput:        portTI,
+		keyInput:         ki,
+		buildVp:          buildVp,
+		modelVp:          modelVp,
+		selected:         make(map[int]bool),
+		port:             8080,
+		apiKey:           "dummy",
+		installedSlugs:   installedSlugs,
+		piOptIn:          piOptIn,
+		piDefaultIdx:     -1,
+		piCurrentDefault: pi.CurrentDefaultModel(),
+		version:          version,
 	}
 
 	if existingState != nil && (len(existingState.Models) > 0 || existingState.Port != 0) {
 		m.State = existingState
+		m.port = existingState.Port
+		m.apiKey = existingState.APIKey
 	} else {
 		m.State = &state.State{Port: 8080, APIKey: "dummy"}
 	}
 
+	if data, err := os.ReadFile(state.DefaultConfigPath()); err == nil {
+		if _, key, err := llamaswap.Catalog(data); err == nil {
+			m.apiKey = key
+		}
+	}
 	return m
 }
 
@@ -305,9 +317,7 @@ func InitialAddModel(version string) Model {
 	if st, err := state.Load(""); err == nil && (len(st.Models) > 0 || st.Port != 0) {
 		m.State = st
 		m.port = st.Port
-		if st.APIKey != "" {
-			m.apiKey = st.APIKey
-		}
+
 		if st.LlamaCppPath != "" {
 			m.llamaCppPath = st.LlamaCppPath
 		}
@@ -414,9 +424,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case buildDoneMsg:
 		if msg.llamaCppPath != "" {
 			m.llamaCppPath = msg.llamaCppPath
+			m.State.LlamaCppPath = msg.llamaCppPath
 		}
 		if msg.llamaSwapPath != "" {
 			m.llamaSwapPath = msg.llamaSwapPath
+			m.State.LlamaSwapPath = msg.llamaSwapPath
 		}
 		if msg.err != nil {
 			m.buildLog = append(m.buildLog, errorStyle.Render("Error: "+msg.err.Error()))
@@ -434,8 +446,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.configYAML = msg.yamlBytes
 		m.configErr = msg.err
 		if msg.err == nil {
-			_, diff, _ := llamaswap.WriteConfig(state.DefaultConfigPath(), msg.yamlBytes)
-			m.configDiff = diff
+			m.configDiff = "Existing profiles and custom settings will be preserved."
 		}
 		return m, nil
 
@@ -446,9 +457,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.piErr = nil
-		if m.State != nil {
-			_ = m.State.Save("")
-		}
+		m.piDefaultIdx = -1
+		m.piDefaultSlug = ""
 		m.Screen = ScreenPiDefault
 		return m, nil
 
@@ -535,6 +545,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
+	if key == "esc" && ((m.Screen == ScreenLaunchAgent && !m.launchDone) || (m.Screen == ScreenPiSetup && !m.piSetupDone) || (m.Screen == ScreenHealth && !m.healthDone)) {
+		return m, nil
+	}
 	if key == "esc" && m.Screen > ScreenWelcome && m.Screen != ScreenDownload && m.Screen != ScreenBuild {
 		m.prevScreen()
 		return m, nil
@@ -599,7 +612,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case ScreenBuild:
-		if key == "enter" && m.llamaCppPath != "" {
+		if key == "enter" && m.llamaCppPath != "" && m.llamaSwapPath != "" && m.buildStep == "" {
 			m.Screen = ScreenConfig
 			return m, runGenerateConfig(m)
 		}
@@ -608,35 +621,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if key != "enter" {
 			return m, nil
 		}
-		if m.configErr == nil {
-			if m.configYAML == nil {
-				return m, nil // still generating
-			}
-			if err := llamaswap.ForceWrite(state.DefaultConfigPath(), m.configYAML); err != nil {
-				m.configDiff = errorStyle.Render("Failed to write config: " + err.Error())
-				return m, nil
-			}
+		if m.configErr != nil || m.configYAML == nil {
+			return m, nil
 		}
-		// When generation failed the write is skipped: the error is already
-		// on screen, and the flow continues so the health check can report
-		// the missing model instead of leaving the user stuck.
-		m.configDone = true
 
-		if m.piOptIn || (m.State != nil && m.State.PiConfigured) {
-			m.State.PiConfigured = true
-			m.Screen = ScreenPiSetup
-			return m, tea.Sequence(
-				runPiInstall(),
-				runPiConfigureStep(m),
-			)
-		}
+		m.configDone = true
 
 		if m.addOnly {
 			m.Screen = ScreenHealth
-			return m, tea.Sequence(
-				restartServiceCmd(),
-				runHealthCheck(m.State.Port, modelIDs(m), m.State.APIKey),
-			)
+			return m, applyAndRestartCmd(m)
+		}
+		if m.piOptIn || (m.State != nil && m.State.PiConfigured) {
+			m.State.PiConfigured = true
+			m.Screen = ScreenPiSetup
+			return m, runPiInstall()
 		}
 		m.Screen = ScreenPort
 		m.portInput.SetValue(fmt.Sprintf("%d", m.port))
@@ -647,14 +645,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if key == "enter" && m.piSetupDone && m.piErr != nil {
 			m.piErr = nil
 			m.piSetupDone = false
-			return m, tea.Sequence(
-				runPiInstall(),
-				runPiConfigureStep(m),
-			)
+			return m, runPiInstall()
 		}
 		if key == "esc" && m.piSetupDone && m.piErr != nil {
 			m.piSetupDone = true
 			m.piErr = nil
+			if m.addOnly {
+				m.Screen = ScreenHealth
+				return m, applyAndRestartCmd(m)
+			}
 			m.Screen = ScreenPort
 			m.portInput.SetValue(fmt.Sprintf("%d", m.port))
 			m.portInput.Focus()
@@ -663,8 +662,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case ScreenPiDefault:
 		if key == "enter" && m.piSetupDone {
-			if len(m.State.Models) > 0 {
-				m.piDefaultSlug = m.State.Models[m.piDefaultIdx].Slug
+			choices := m.piModelChoices()
+			m.piDefaultSlug = ""
+			if m.piDefaultIdx >= 0 && m.piDefaultIdx < len(choices) {
+				m.piDefaultSlug = choices[m.piDefaultIdx].Slug
+			}
+			if m.addOnly {
+				m.Screen = ScreenHealth
+				return m, applyAndRestartCmd(m)
 			}
 			m.Screen = ScreenPort
 			m.portInput.SetValue(fmt.Sprintf("%d", m.port))
@@ -672,12 +677,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if key == "up" || key == "k" {
-			if m.piDefaultIdx > 0 {
+			if m.piDefaultIdx > -1 {
 				m.piDefaultIdx--
 			}
 		}
 		if key == "down" || key == "j" {
-			if m.piDefaultIdx < len(m.State.Models)-1 {
+			if m.piDefaultIdx < len(m.piModelChoices())-1 {
 				m.piDefaultIdx++
 			}
 		}
@@ -695,6 +700,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.portInput, cmd = m.portInput.Update(msg)
+		m.portChecked = false
 		return m, cmd
 
 	case ScreenAPIKey:
@@ -720,12 +726,24 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case ScreenLaunchAgent:
 		if m.launchDone && key == "enter" {
+			if m.launchErr != nil {
+				m.launchDone = false
+				m.launchErr = nil
+				return m, runInstallLaunchAgent(m)
+			}
 			m.Screen = ScreenHealth
 			return m, runHealthCheck(m.port, modelIDs(m), m.apiKey)
 		}
 
 	case ScreenHealth:
 		if m.healthDone && key == "enter" {
+			if !m.healthReport.Pass {
+				m.healthDone = false
+				if m.addOnly {
+					return m, applyAndRestartCmd(m)
+				}
+				return m, runHealthCheck(m.port, modelIDs(m), m.apiKey)
+			}
 			m.Screen = ScreenDone
 			return m, nil
 		}
@@ -748,7 +766,11 @@ func (m *Model) prevScreen() {
 	case ScreenModelSelect:
 		m.Screen = ScreenHardware
 	case ScreenConfig:
-		m.Screen = ScreenBuild
+		if m.addOnly {
+			m.Screen = ScreenModelSelect
+		} else {
+			m.Screen = ScreenBuild
+		}
 	case ScreenPiSetup:
 		m.Screen = ScreenConfig
 	case ScreenPiDefault:
@@ -760,7 +782,11 @@ func (m *Model) prevScreen() {
 	case ScreenLaunchAgent:
 		m.Screen = ScreenAPIKey
 	case ScreenHealth:
-		m.Screen = ScreenLaunchAgent
+		if m.addOnly {
+			m.Screen = ScreenConfig
+		} else {
+			m.Screen = ScreenLaunchAgent
+		}
 	case ScreenDone:
 		m.Screen = ScreenHealth
 	}
@@ -784,7 +810,18 @@ func (m Model) breadcrumb() string {
 			parts = append(parts, dim.Render(screenNames[s]))
 		}
 	}
-	return dim.Render(strings.Join(parts, " › "))
+	trail := dim.Render(strings.Join(parts, " › "))
+	if m.Width > 0 && lipgloss.Width(trail) > m.Width-2 {
+		step := 1
+		for i, s := range order {
+			if s == m.Screen {
+				step = i + 1
+				break
+			}
+		}
+		return headerStyle.Render(fmt.Sprintf("Step %d/%d · %s", step, len(order), screenNames[m.Screen]))
+	}
+	return trail
 }
 
 func (m Model) handleModelSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -991,12 +1028,13 @@ func (m *Model) renderRipples() string {
 }
 
 func (m Model) welcomeView() string {
+	m.Height = max(1, m.Height-6)
 	s := m.renderRipples()
+	footer := "Enter to start · Ctrl+C to quit"
 	if m.version != "" {
-		v := lipgloss.PlaceHorizontal(m.Width, lipgloss.Right, dimStyle.Render("v"+strings.TrimPrefix(m.version, "v")))
-		s += "\n" + v
+		footer += " · v" + strings.TrimPrefix(m.version, "v")
 	}
-	return s
+	return s + "\n" + dimStyle.Render(ansi.Truncate(footer, max(1, m.Width), "…"))
 }
 
 func (m Model) depsView() string {
@@ -1042,7 +1080,7 @@ func (m Model) depsView() string {
 		if build.AllPresent(m.deps) {
 			s += "\n" + successIcon.Render("All dependencies found.") + "\n"
 			if piInstalled && m.piOptIn {
-				s += successIcon.Render("pi will be reconfigured with current models") + "\n"
+				s += successIcon.Render("Pi models will be synced; existing preferences are kept") + "\n"
 			} else if m.piOptIn {
 				s += successIcon.Render("pi will be installed and configured") + "\n"
 			} else if piInstalled {
@@ -1274,31 +1312,31 @@ func (m Model) buildView() string {
 }
 
 func (m Model) configView() string {
-	s := "Generating llama-swap configuration...\n\n"
-	ready := false
-	hasConflict := false
+	s := "Preparing model configuration...\n\n"
 	if m.configErr != nil {
 		s += errorStyle.Render(m.configErr.Error()) + "\n\n"
-		s += promptStyle.Render("Press Enter to continue without writing the configuration.")
+		s += dimStyle.Render("Fix the config, then Esc to go back and retry.")
 		return borderFor(false, true).Width(m.Width - 4).Render(s)
 	}
-	if m.configYAML != nil {
-		ready = !m.configDone
-		hasConflict = m.configDiff != ""
-		s += successIcon.Render("Configuration generated.") + "\n\n"
-		preview := string(m.configYAML)
-		if len(preview) > 400 {
-			preview = preview[:400] + "\n..."
-		}
-		s += dimStyle.Render(preview)
-		if m.configDiff != "" {
-			s += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "178", Dark: "226"}).Render("Diff:\n"+m.configDiff)
-		}
-		s += "\n" + promptStyle.Render("Press Enter to save and continue")
-	} else {
-		s += m.spinner.View()
+	if m.configYAML == nil {
+		return boxStyle.Width(m.Width - 4).Render(s + m.spinner.View())
 	}
-	return borderFor(ready && !hasConflict, hasConflict).Width(m.Width - 4).Render(s)
+	models, _, err := llamaswap.Catalog(m.configYAML)
+	if err != nil {
+		return borderFor(false, true).Width(m.Width - 4).Render(err.Error())
+	}
+	s += successIcon.Render(fmt.Sprintf("%d profiles and aliases ready.", len(models))) + "\n\n"
+	for i, model := range models {
+		if i == 5 {
+			s += fmt.Sprintf("  … and %d more\n", len(models)-i)
+			break
+		}
+		s += "  " + ansi.Truncate(model.Slug, max(16, m.Width-10), "…") + "\n"
+	}
+	s += "\nExisting profiles and Pi preferences are preserved.\n"
+	s += "Settings are saved after the remaining choices.\n\n"
+	s += dimStyle.Render("Enter continue · Esc back · Ctrl+C quit")
+	return borderFor(true, false).Width(m.Width - 4).Render(s)
 }
 
 func (m Model) portView() string {
@@ -1336,8 +1374,15 @@ func (m Model) apiKeyView() string {
 		s += m.keyInput.View()
 		s += "\n\n" + promptStyle.Render("Press Enter to confirm")
 	} else {
-		s += fmt.Sprintf("Default: %s\n\n", infoStyle.Render("dummy"))
-		s += promptStyle.Render("Press Enter for dummy, or Y to set a custom key")
+		status := "Current API key is configured."
+		switch m.apiKey {
+		case "dummy":
+			status = "API key: dummy (setup default)."
+		case "":
+			status = "API authentication is currently disabled."
+		}
+		s += status + "\n\n"
+		s += promptStyle.Render("Enter keeps the current setting · y changes the key")
 	}
 	return boxStyle.Width(m.Width - 4).Render(s)
 }
@@ -1349,16 +1394,18 @@ func (m Model) launchView() string {
 	if m.launchDone {
 		if m.launchErr != nil {
 			failed = true
-			s += errorStyle.Render("Error: " + m.launchErr.Error())
+			s += errorStyle.Render("Error: "+m.launchErr.Error()) + "\n" + promptStyle.Render("Enter retry · Esc back · Ctrl+C quit")
 		} else {
 			done = true
 			s += "  " + successIcon.String() + " Wrote plist\n"
 			s += "  " + successIcon.String() + " Registered with launchd\n"
-			s += "\n" + successIcon.Render("Service installed and running.") + "\n"
+			s += "\n" + successIcon.Render("Service registered; API readiness is checked next.") + "\n"
 			s += fmt.Sprintf("Plist: %s\n", infoStyle.Render("~/Library/LaunchAgents/com.local.llama-swap.plist"))
 			s += "\nThe service will auto-start on next login."
 		}
-		s += "\n" + promptStyle.Render("Press Enter to continue")
+		if m.launchErr == nil {
+			s += "\n" + promptStyle.Render("Press Enter to check API readiness")
+		}
 	} else {
 		s += m.spinner.View() + " Working...\n\n"
 		steps := []string{"Writing LaunchAgent plist", "Registering with launchd"}
@@ -1378,31 +1425,64 @@ func (m Model) piSetupView() string {
 	if m.piSetupDone {
 		if m.piErr != nil {
 			s += errorStyle.Render("Pi setup failed: "+m.piErr.Error()) + "\n\n"
-			s += promptStyle.Render("Press Enter to retry, Esc to skip")
+			s += promptStyle.Render("Press Enter to retry, Esc to go back")
 		} else {
-			s += successIcon.Render("Pi configured successfully.") + "\n"
+			s += successIcon.Render("Pi is available. Settings are saved after your choices.") + "\n"
 		}
 	} else {
-		s += m.spinner.View() + " Installing and configuring pi..."
+		s += m.spinner.View() + " Checking or installing pi..."
 	}
 	return borderFor(m.piSetupDone && m.piErr == nil, m.piSetupDone && m.piErr != nil).Width(m.Width - 4).Render(s)
 }
 
 func (m Model) piDefaultView() string {
-	s := "Choose a default model for pi:\n\n"
-	for i, mdl := range m.State.Models {
-		cursor := "  "
+	width := m.Width
+	if width == 0 {
+		width = 80
+	}
+	boxWidth := max(24, width-4)
+	contentWidth := max(16, boxWidth-boxStyle.GetHorizontalPadding())
+	fit := func(s string) string { return ansi.Truncate(s, contentWidth, "…") }
+	var lines []string
+	lines = append(lines, "Pi default model")
+	current := "Current: " + m.piCurrentDefault
+	if m.piCurrentDefault == "" {
+		current = "No default saved; new setup uses the first local model."
+	}
+	lines = append(lines, fit(current), "")
+	cursor := "  "
+	if m.piDefaultIdx == -1 {
+		cursor = cursorMark.Render("› ")
+	}
+	lines = append(lines, cursor+"Keep current default", "")
+	choices := m.piModelChoices()
+	height := m.Height
+	if height == 0 {
+		height = 24
+	}
+	// Reserve title, current setting, keep row, list heading, footer, border,
+	// padding and breadcrumb. Keep the selection visible as the list scrolls.
+	visible := min(len(choices), max(1, height-lipgloss.Height(m.breadcrumb())-14))
+	start := 0
+	if m.piDefaultIdx >= visible {
+		start = m.piDefaultIdx - visible + 1
+	}
+	end := min(len(choices), start+visible)
+	heading := "Switch to a local model"
+	if len(choices) > visible {
+		heading += fmt.Sprintf(" (%d–%d of %d)", start+1, end, len(choices))
+	}
+	lines = append(lines, fit(heading))
+	for i := start; i < end; i++ {
+		cursor = "  "
 		if i == m.piDefaultIdx {
 			cursor = cursorMark.Render("› ")
 		}
-		id := mdl.Slug
-		if mdl.Name != "" {
-			id = mdl.Name + " (" + mdl.Slug + ")"
-		}
-		s += cursor + id + "\n"
+		// Stable model IDs include the quant and avoid duplicated display names.
+		lines = append(lines, cursor+ansi.Truncate(choices[i].Slug, contentWidth-2, "…"))
 	}
-	s += "\n" + promptStyle.Render("↑↓ navigate   Enter to confirm")
-	return borderFor(false, false).Width(m.Width - 4).Render(s)
+	lines = append(lines, "", fit("↑/↓ choose · Enter confirm · Esc back"))
+	return borderFor(false, false).Width(boxWidth).Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) healthView() string {
@@ -1413,7 +1493,7 @@ func (m Model) healthView() string {
 		r := m.healthReport
 		if r.Pass {
 			passed = true
-			s += successIcon.Render("All models loaded and healthy!") + "\n"
+			s += successIcon.Render("Service API ready; configured models are listed.") + "\n"
 		} else {
 			failed = true
 			s += errorStyle.Render("Health check failed.") + "\n"
@@ -1429,7 +1509,11 @@ func (m Model) healthView() string {
 		}
 		s += fmt.Sprintf("\nFound: %d models  Attempts: %d  Duration: %s\n",
 			len(r.FoundModels), r.Attempts, r.Duration)
-		s += "\n" + promptStyle.Render("Press Enter to continue")
+		if r.Pass {
+			s += "\n" + promptStyle.Render("Press Enter to finish")
+		} else {
+			s += "\n" + promptStyle.Render("Enter retry · Esc back · Ctrl+C quit")
+		}
 	} else {
 		s += m.spinner.View() + " Polling /v1/models..."
 	}
@@ -1485,9 +1569,13 @@ func runBuildSwap() tea.Cmd {
 
 func runGenerateConfig(m Model) tea.Cmd {
 	return func() tea.Msg {
-		models := selectedModels(m)
-		yamlBytes, err := llamaswap.GenerateConfig(models, m.apiKey, m.llamaCppPath, m.hardware)
-		return configGeneratedMsg{yamlBytes: yamlBytes, err: err}
+		st := *m.State
+		st.LlamaCppPath = m.llamaCppPath
+		plan, err := configsync.Prepare(&st, configsync.Options{})
+		if err != nil {
+			return configGeneratedMsg{err: err}
+		}
+		return configGeneratedMsg{yamlBytes: plan.Master}
 	}
 }
 
@@ -1503,37 +1591,53 @@ func runPortCheck(port int, apiKey string) tea.Cmd {
 	}
 }
 
-func restartServiceCmd() tea.Cmd {
+func saveConfiguration(m Model) error {
+	st := *m.State
+	st.Port = m.port
+	st.APIKey = m.apiKey
+	st.LlamaCppPath = m.llamaCppPath
+	st.LlamaSwapPath = m.llamaSwapPath
+	st.PiConfigured = m.piOptIn || st.PiConfigured
+	var keyOverride *string
+	if !m.addOnly && m.setCustomKey {
+		keyOverride = &m.apiKey
+	}
+	plan, err := configsync.Prepare(&st, configsync.Options{APIKey: keyOverride, DefaultModel: m.piDefaultSlug})
+	if err != nil {
+		return err
+	}
+	if _, err = plan.Commit(); err != nil {
+		return err
+	}
+	st.APIKey = plan.APIKey
+	*m.State = st
+	return nil
+}
+
+func applyAndRestartCmd(m Model) tea.Cmd {
 	return func() tea.Msg {
-		_ = launchd.Stop()
-		home, _ := os.UserHomeDir()
-		plistPath := filepath.Join(home, "Library", "LaunchAgents", launchd.PlistName)
-		_ = launchd.Start(plistPath)
-		return nil
+		err := saveConfiguration(m)
+		if err == nil {
+			err = service.RestartAndCheck(m.State)
+		}
+		if err != nil {
+			return healthCheckMsg{report: health.Report{Error: err.Error()}}
+		}
+		return healthCheckMsg{report: health.Report{Pass: true, Port: m.port}}
 	}
 }
 
 func runInstallLaunchAgent(m Model) tea.Cmd {
-	plistPath := ""
-	configPath := state.DefaultConfigPath()
-
-	return tea.Sequence(
-		func() tea.Msg {
-			path, err := launchd.WritePlist(m.llamaSwapPath, configPath, m.port)
-			if err != nil {
-				return launchProgressMsg{done: true, err: err}
-			}
-			plistPath = path
-			return launchProgressMsg{step: "Wrote plist"}
-		},
-		func() tea.Msg {
-			err := launchd.Install(plistPath)
-			if err != nil {
-				return launchProgressMsg{done: true, err: err}
-			}
-			return launchProgressMsg{step: "Registered with launchd", done: true}
-		},
-	)
+	return func() tea.Msg {
+		if err := saveConfiguration(m); err != nil {
+			return launchProgressMsg{done: true, err: err}
+		}
+		path, err := launchd.WritePlist(m.llamaSwapPath, state.DefaultConfigPath(), m.port)
+		if err == nil {
+			err = launchd.Install(path)
+		}
+		return launchProgressMsg{step: "Configuration saved and service registered", done: true, err: err}
+	}
 }
 
 func runHealthCheck(port int, modelIDs []string, apiKey string) tea.Cmd {
@@ -1691,9 +1795,13 @@ func downloadAll(ch chan<- tea.Msg, indices []int, candidates []whichllm.ModelCa
 		allOk := true
 		var combinedDownloaded int64
 		for _, f := range files {
-			home, _ := os.UserHomeDir()
 			slug := state.DeriveSlugWithQuant(c.ModelID, c.QuantType)
-			destDir := filepath.Join(home, "models", slug)
+			destDir, err := state.ModelDir(slug)
+			if err != nil {
+				ch <- dlProgressMsg{modelIdx: i, slug: slug, err: err, done: true}
+				allOk = false
+				break
+			}
 
 			progCh := make(chan download.Progress, 20)
 			errCh := make(chan error, 1)
@@ -1775,22 +1883,11 @@ func runPiInstall() tea.Cmd {
 	}
 }
 
-func runPiConfigureStep(m Model) tea.Cmd {
-	return func() tea.Msg {
-		models := selectedModels(m)
-		if len(models) == 0 {
-			models = m.State.Models
+func (m Model) piModelChoices() []state.ModelEntry {
+	if len(m.configYAML) > 0 {
+		if models, _, err := llamaswap.Catalog(m.configYAML); err == nil {
+			return models
 		}
-		defaultModel := m.piDefaultSlug
-		if defaultModel == "" && len(models) > 0 {
-			defaultModel = models[0].Slug
-		}
-		if err := pi.ConfigureModels(m.State.Port, models); err != nil {
-			return piSetupDoneMsg{err: err}
-		}
-		if err := pi.ConfigureSettings(defaultModel, models); err != nil {
-			return piSetupDoneMsg{err: err}
-		}
-		return piSetupDoneMsg{}
 	}
+	return m.State.Models
 }

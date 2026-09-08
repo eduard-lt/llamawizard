@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/eduard-lt/llamawizard/internal/download"
+	"github.com/eduard-lt/llamawizard/internal/state"
 )
 
 // linkScreen enumerates the phases of the add-from-link TUI.
@@ -304,8 +304,20 @@ func (m *linkPicker) startDownload() tea.Cmd {
 func (m *linkPicker) runDownload(ch chan<- tea.Msg) {
 	defer close(ch)
 
-	home, _ := os.UserHomeDir()
-	destDir := filepath.Join(home, "models", m.slug)
+	destDir, err := state.ModelDir(m.slug)
+	if err != nil {
+		ch <- linkDlMsg{done: true, err: err}
+		return
+	}
+	st, err := state.Load("")
+	if err != nil {
+		ch <- linkDlMsg{done: true, err: err}
+		return
+	}
+	if err := validateNewModel(st, m.slug); err != nil {
+		ch <- linkDlMsg{done: true, err: err}
+		return
+	}
 
 	files := []download.RemoteFile{m.main}
 	if m.mmproj != nil {

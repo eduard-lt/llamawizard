@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -17,12 +16,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/eduard-lt/llamawizard/internal/binversion"
-	"github.com/eduard-lt/llamawizard/internal/hardware"
+	"github.com/eduard-lt/llamawizard/internal/configsync"
 	"github.com/eduard-lt/llamawizard/internal/health"
 	"github.com/eduard-lt/llamawizard/internal/launchd"
 	"github.com/eduard-lt/llamawizard/internal/llamaswap"
 	"github.com/eduard-lt/llamawizard/internal/logtail"
 	"github.com/eduard-lt/llamawizard/internal/pi"
+	"github.com/eduard-lt/llamawizard/internal/service"
 	"github.com/eduard-lt/llamawizard/internal/state"
 	"github.com/eduard-lt/llamawizard/internal/update"
 	"github.com/eduard-lt/llamawizard/internal/warlock"
@@ -123,21 +123,15 @@ func runStop() {
 }
 
 func runRestart() {
-	if err := launchd.Stop(); err != nil {
-		log.Printf("Warning: failed to stop service: %v", err)
+	st, err := state.Load("")
+	if err == nil {
+		err = service.RestartAndCheck(st)
 	}
-
-	plistPath, err := defaultPlistPath()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Restart failed: %v\n", err)
 		os.Exit(1)
 	}
-
-	if err := launchd.Start(plistPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Error starting: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("Service restarted.")
+	fmt.Println("Service restarted and API ready.")
 }
 
 func runWarlock(args []string) {
@@ -520,6 +514,23 @@ func runModelsList() {
 		os.Exit(1)
 	}
 
+	if data, err := os.ReadFile(state.DefaultConfigPath()); err == nil {
+		profiles, _, err := llamaswap.Catalog(data)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Cannot read configured profiles: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Configured profiles and aliases (%d):\n", len(profiles))
+		for _, p := range profiles {
+			ctx := ""
+			if p.CtxSize > 0 {
+				ctx = fmt.Sprintf("  ctx %d", p.CtxSize)
+			}
+			fmt.Printf("  %s%s\n", p.Slug, ctx)
+		}
+		fmt.Println()
+	}
+
 	if len(st.Models) == 0 {
 		fmt.Println("No models installed.")
 		return
@@ -555,6 +566,24 @@ func runModelsShow(name string) {
 			}
 			fmt.Printf("Installed:   %s\n", m.InstalledAt)
 			return
+		}
+	}
+
+	if data, err := os.ReadFile(state.DefaultConfigPath()); err == nil {
+		profiles, _, err := llamaswap.Catalog(data)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		for _, p := range profiles {
+			if p.Slug == name {
+				fmt.Printf("Profile:     %s\nName:        %s\n", p.Slug, p.Name)
+				if p.CtxSize > 0 {
+					fmt.Printf("Context:     %d tokens\n", p.CtxSize)
+				}
+				fmt.Printf("Config:      %s\nEdit this profile in the master YAML, then run 'llamawizard config apply'.\n", state.DefaultConfigPath())
+				return
+			}
 		}
 	}
 
@@ -609,112 +638,159 @@ func removeModelsByName(st *state.State, slug string) (kept []state.ModelEntry, 
 	return kept, removed
 }
 
-func runModelsRemove(name string) {
+func runModelsRemove(name string)                   { removeModelCommand(name, false, false) }
+func runModelsDelete(name string, skipConfirm bool) { removeModelCommand(name, true, skipConfirm) }
+
+func removeModelCommand(name string, deleteFiles, skipConfirm bool) {
 	st, err := state.Load("")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading state: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-
-	kept, removed := removeModelsByName(st, name)
-	if removed == 0 {
-		fmt.Printf("Model '%s' not found.\n", name)
-		os.Exit(1)
-	}
-	st.Models = kept
-
-	if err := st.Save(""); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving state: %v\n", err)
-		os.Exit(1)
-	}
-
-	if removed > 1 {
-		fmt.Printf("Removed %d duplicate entries for %s from config.\n", removed, name)
-	} else {
-		fmt.Printf("Removed %s from config.\n", name)
-	}
-	fmt.Println("The model file was NOT deleted. Use 'models delete' to also remove the file.")
-
-	regenerateConfig(st)
-}
-
-func runModelsDelete(name string, skipConfirm bool) {
-	st, err := state.Load("")
+	dir, err := state.ModelDir(name)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading state: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-
 	kept, removed := removeModelsByName(st, name)
 	if removed == 0 {
-		fmt.Printf("Model '%s' not found.\n", name)
+		fmt.Fprintf(os.Stderr, "Model %q not found in inventory. Edit the master config for custom profiles.\n", name)
 		os.Exit(1)
 	}
-
-	if !skipConfirm {
-		fmt.Printf("This will remove '%s' from config AND delete its files.\n", name)
-		fmt.Printf("Files in ~/models/%s/ will be deleted.\n", name)
-		fmt.Print("Proceed? [y/N] ")
-		var answer string
-		_, _ = fmt.Scanln(&answer)
-		if strings.ToLower(answer) != "y" && strings.ToLower(answer) != "yes" {
-			fmt.Println("Cancelled.")
-			return
+	if deleteFiles {
+		data, err := os.ReadFile(state.DefaultConfigPath())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		refs, err := llamaswap.References(data, dir, name)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if len(refs) > 0 {
+			fmt.Fprintf(os.Stderr, "Cannot delete files: profiles %s still use them. Remove those profiles or use models remove.\n", strings.Join(refs, ", "))
+			os.Exit(1)
+		}
+		if !skipConfirm {
+			fmt.Printf("Delete model %q and files in %s? [y/N] ", name, dir)
+			var answer string
+			_, _ = fmt.Scanln(&answer)
+			if strings.ToLower(answer) != "y" && strings.ToLower(answer) != "yes" {
+				return
+			}
 		}
 	}
-
-	home, _ := os.UserHomeDir()
-	modelDir := filepath.Join(home, "models", name)
-	if err := os.RemoveAll(modelDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not delete model files: %v\n", err)
-	} else {
-		fmt.Printf("Deleted %s\n", modelDir)
-	}
-
 	st.Models = kept
-	if err := st.Save(""); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving state: %v\n", err)
+	plan, err := configsync.Prepare(st, configsync.Options{Remove: []string{name}})
+	if err == nil {
+		_, err = plan.Commit()
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Configuration unchanged: %v\n", err)
 		os.Exit(1)
 	}
-
-	if removed > 1 {
-		fmt.Printf("Removed %d duplicate entries for %s from config and disk.\n", removed, name)
-	} else {
-		fmt.Printf("Removed %s from config and disk.\n", name)
+	if err = service.RestartAndCheck(st); err != nil {
+		fmt.Fprintf(os.Stderr, "Configuration saved, but restart failed (files retained): %v\n", err)
+		os.Exit(1)
 	}
-
-	regenerateConfig(st)
+	if deleteFiles {
+		if err = os.RemoveAll(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "Configuration removed, but deleting files failed: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	fmt.Printf("Removed %s. Service API ready.\n", name)
 }
 
-func regenerateConfig(st *state.State) {
-	hw, _ := hardware.Detect()
-	yamlBytes, err := llamaswap.GenerateConfig(st.Models, st.APIKey, st.LlamaCppPath, hw)
+func regenerateConfig(st *state.State) error {
+	plan, err := configsync.Prepare(st, configsync.Options{})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error generating config: %v\n", err)
+		return err
+	}
+	backup, err := plan.Commit()
+	if err != nil {
+		return err
+	}
+	st.APIKey = plan.APIKey
+	fmt.Printf("Configuration merged at %s\n", state.DefaultConfigPath())
+	if backup != "" {
+		fmt.Printf("Backup: %s\n", backup)
+	}
+	return nil
+}
+
+func runConfigApply(args []string) {
+	dry := false
+	defaultModel := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run":
+			dry = true
+		case "--default":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--default needs a model ID")
+				os.Exit(1)
+			}
+			i++
+			defaultModel = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown flag %s\n", args[i])
+			os.Exit(1)
+		}
+	}
+	st, err := state.Load("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if pi.IsInstalled() {
+		st.PiConfigured = true
+	}
+	plan, err := configsync.Prepare(st, configsync.Options{ApplyOnly: true, DefaultModel: defaultModel})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot apply: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Master config: %s\n%d model IDs (including aliases), port %d\n", state.DefaultConfigPath(), len(plan.Models), plan.Port)
+	for _, change := range plan.Changes {
+		fmt.Printf("Update: %s\n", change.Path)
+	}
+	if dry {
+		fmt.Println("Preview only; no files changed or service restarted.")
 		return
 	}
-	configPath := state.DefaultConfigPath()
-	if err := llamaswap.ForceWrite(configPath, yamlBytes); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing config: %v\n", err)
-		return
+	backup, err := plan.Commit()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	fmt.Printf("Config updated at %s\n", configPath)
+	if backup != "" {
+		fmt.Printf("Backup: %s\n", backup)
+	}
+	if err = service.RestartAndCheck(st); err != nil {
+		fmt.Fprintf(os.Stderr, "Files saved, but service is not ready: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Configuration applied; service API ready.")
 }
 
 func runConfig(args []string) {
 	if len(args) < 1 {
-		fmt.Println("Usage: llamawizard config <show|path>")
+		fmt.Println("Usage: llamawizard config <show|path|apply>")
 		os.Exit(1)
 	}
 
 	switch args[0] {
+	case "apply":
+		runConfigApply(args[1:])
 	case "show":
 		runConfigShow()
 	case "path":
 		runConfigPath()
 	default:
 		fmt.Printf("Unknown subcommand: config %s\n", args[0])
-		fmt.Println("Usage: llamawizard config <show|path>")
+		fmt.Println("Usage: llamawizard config <show|path|apply>")
 		os.Exit(1)
 	}
 }

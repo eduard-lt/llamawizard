@@ -1,19 +1,12 @@
-# llamawizard
+# llamawizard — run local LLMs on macOS
 
-```
-██╗     ██╗      █████╗ ███╗   ███╗ █████╗ ██╗    ██╗██╗███████╗ █████╗ ██████╗ ██████╗ 
-██║     ██║     ██╔══██╗████╗ ████║██╔══██╗██║    ██║██║╚══███╔╝██╔══██╗██╔══██╗██╔══██╗
-██║     ██║     ███████║██╔████╔██║███████║██║ █╗ ██║██║  ███╔╝ ███████║██████╔╝██║  ██║
-██║     ██║     ██╔══██║██║╚██╔╝██║██╔══██║██║███╗██║██║ ███╔╝  ██╔══██║██╔══██╗██║  ██║
-███████╗███████╗██║  ██║██║ ╚═╝ ██║██║  ██║╚███╔███╔╝██║███████╗██║  ██║██║  ██║██████╔╝
-╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ 
-```
+Download GGUF models, run Metal-accelerated llama.cpp on Apple Silicon, and manage an OpenAI-compatible local API with llama-swap. llamawizard is a terminal setup wizard and model manager for Mac users who want to run and customize local language models.
 
-A terminal wizard that takes a Mac from zero to a running, hardware-appropriate local LLM stack. It detects your hardware, picks the right model via [whichllm](https://github.com/Andyyyy64/whichllm), downloads it, builds llama.cpp (Metal-accelerated on Apple Silicon), installs and configures llama-swap, sets up a LaunchAgent for auto-start on boot, and runs a health check before it says "done."
+It detects your Mac's hardware, recommends models, downloads weights, installs the inference stack, and manages a LaunchAgent. After setup, use it to add models, start and stop the service, inspect logs, and experiment with model profiles.
 
-After setup, it doubles as an ongoing management tool: start, stop, restart, status, health checks, log viewing, and model management.
+**Keep your customizations:** edit one llama-swap YAML file for aliases, context sizes, and model profiles. Adding a model preserves existing entries; `config apply` synchronizes shared settings to Pi with backups and a service-readiness check. See [Customize local LLM profiles](docs/customization.md).
 
-**Status:** actively developed. Commands and file layout may still change between versions.
+**Status:** actively developed. The customization workflow described here is on the 0.1.8 development branch until that release is published.
 
 ## Table of contents
 
@@ -24,6 +17,8 @@ After setup, it doubles as an ongoing management tool: start, stop, restart, sta
 - [What the wizard does](#what-the-wizard-does)
 - [Commands](#commands)
 - [Shell completion](#shell-completion)
+- [Model customization](#model-customization)
+- [Testing](#testing)
 - [Architecture](#architecture)
 - [Files on disk](#files-on-disk)
 - [Troubleshooting](#troubleshooting)
@@ -57,7 +52,7 @@ The wizard also needs these tools and will install them for you when possible:
 | cmake | Build llama.cpp | Yes (via `brew install cmake`) |
 | git | Source checkout | Yes (via `brew install git`) |
 | uv | Run whichllm for model ranking | Yes (via `brew install uv`) |
-| pi | A minimal agent harness - optional. | Yes (via `curl -fsSL <https://pi.dev/install.sh> \| sh`) |
+| pi | A minimal agent harness - optional. | Yes (via `npm install -g @earendil-works/pi-coding-agent`; requires npm) |
 
 ## Setting up dependencies on a fresh Mac
 
@@ -192,6 +187,7 @@ Running `llamawizard` with no arguments walks through every step:
 | `llamawizard models show`, `m sh <name>` | Show a model's config and file path |
 | `llamawizard models remove`, `m rm <name>` | Remove a model **from config only** — file stays on disk |
 | `llamawizard models delete <name> [--yes]` | Remove a model from config **and delete its file** (no shorthand) |
+| `llamawizard config apply [--dry-run] [--default ID]` | Apply master model settings to Pi, preserve customizations, and verify service readiness |
 | `llamawizard config show`, `cfg sh` | Print the active config |
 | `llamawizard config path`, `cfg p` | Print config file location |
 | `llamawizard pi install` | Install and configure pi coding agent |
@@ -210,7 +206,7 @@ Notes on commands whose behavior isn't obvious from the name alone:
 - **`doctor`** polls `http://127.0.0.1:<port>/v1/models` with exponential backoff (first attempt immediate, then 2s, 4s, 8s, 16s) and confirms every expected model ID is present. On failure it prints the last 20 lines of the llama-swap error log, and saves the result to `state.json`.
 - **`models remove`** deletes the entry from `state.json`, regenerates the llama-swap config, and restarts the service — but leaves the model file untouched on disk. Use **`models delete`** if you also want the file gone.
 - **`uninstall`** is interactive and asks for confirmation before stopping the service, removing the LaunchAgent plist, and deleting `state.json`. Model files and the config directory are left in place for manual cleanup.
-- **`logs`** prints the last 30 lines of both `llama-swap.log` and `llama-swap-error.log`; use `tail -f` yourself for live following.
+- **`logs`** prints the last 30 lines of both `llama-swap.log` and `llama-swap-error.log`; add `-f` for live following.
 
 ## Shell completion
 
@@ -233,6 +229,22 @@ llamawizard completion zsh >> ~/.zshrc
 ```fish
 llamawizard completion fish >> ~/.config/fish/config.fish
 ```
+
+## Model customization
+
+Keep aliases, different context sizes, and multiple profiles sharing the same GGUF in `~/.local/ai/config/llama-swap.yaml`:
+
+```bash
+$EDITOR ~/.local/ai/config/llama-swap.yaml
+llamawizard config apply --dry-run
+llamawizard config apply
+```
+
+Adding a model merges in its new entry. Existing profiles and Pi-specific settings are preserved. Read the [customization and recovery guide](docs/customization.md) for examples and the exact synchronization rules.
+
+## Testing
+
+Run `go test ./... -race -count=1` and `go vet ./...`. See [testing and manual acceptance](docs/testing.md) for isolated CLI end-to-end coverage and optional real launchd checks.
 
 ## Architecture
 
@@ -277,8 +289,8 @@ hardware  whichllm  download   build       llamaswap launchd  state
 
 | Path | Purpose |
 | ------ | --------- |
-| `~/.local/ai/state.json` | Source of truth: port, API key, chip, binary paths, installed models |
-| `~/.local/ai/config/llama-swap.yaml` | llama-swap model configuration |
+| `~/.local/ai/state.json` | Download inventory and service settings: port, chip, binary paths, installed files |
+| `~/.local/ai/config/llama-swap.yaml` | Editable master model configuration, profiles, aliases, and API keys |
 | `~/Library/LaunchAgents/com.local.llama-swap.plist` | LaunchAgent for auto-start |
 | `~/.local/ai/logs/llama-swap.log` | llama-swap stdout log |
 | `~/.local/ai/logs/llama-swap-error.log` | llama-swap stderr log |
@@ -288,10 +300,10 @@ hardware  whichllm  download   build       llamaswap launchd  state
 ## Troubleshooting
 
 **Config YAML looks corrupted after hand-editing (bad indentation, missing fields)**
-Avoid editing `llama-swap.yaml` directly in an editor that reflows indentation (e.g. nano with auto-indent). Regenerate the config through `llamawizard models add`/`remove`/`delete` instead, or restore from a backup and reapply changes carefully.
+Use spaces for YAML indentation. Run `llamawizard config apply --dry-run` to validate edits before applying. Existing customizations are preserved when adding models. See the [backup recovery instructions](docs/customization.md#backups-and-recovery).
 
 **`doctor` reports a model missing after a config change**
-Run `llamawizard restart` after any manual config edit — llama-swap does not hot-reload changes made outside the wizard's own write path.
+Run `llamawizard config apply` after editing the master YAML to synchronize Pi and verify the service API. Readiness checks confirm the API listing; test an inference request to verify a model loads within available memory.
 
 ## License
 

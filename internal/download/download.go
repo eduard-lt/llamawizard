@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
+	"time"
 )
 
 // RemoteFile describes a single file to download from HuggingFace.
@@ -41,7 +43,7 @@ func ResolveFiles(repo, quant string) ([]RemoteFile, error) {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: 30 * time.Second, Transport: http.DefaultTransport}).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching HF tree: %w", err)
 	}
@@ -83,6 +85,12 @@ func ResolveFiles(repo, quant string) ([]RemoteFile, error) {
 				IsMmproj: true,
 			}
 		} else {
+			if err := ValidateArtifact(e.Path); err != nil {
+				return nil, err
+			}
+			if mainFile != nil {
+				return nil, fmt.Errorf("multiple GGUF files match %q in %s; choose an exact file with models add --link", quant, repo)
+			}
 			mainFile = &RemoteFile{
 				RepoID:   repo,
 				Filename: e.Path,
@@ -125,7 +133,7 @@ func ListGGUFFiles(repo string) ([]RemoteFile, error) {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: 30 * time.Second, Transport: http.DefaultTransport}).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching HF tree: %w", err)
 	}
@@ -160,4 +168,14 @@ func ListGGUFFiles(repo string) ([]RemoteFile, error) {
 	}
 
 	return files, nil
+}
+
+var splitArtifact = regexp.MustCompile(`(?i)-[0-9]{5}-of-[0-9]{5}\.gguf$`)
+
+// Multipart downloads must not be registered as complete after a single shard.
+func ValidateArtifact(filename string) error {
+	if splitArtifact.MatchString(filename) {
+		return fmt.Errorf("split GGUF %q requires multiple shards; choose a single-file GGUF (automatic split downloads are not supported yet)", filename)
+	}
+	return nil
 }

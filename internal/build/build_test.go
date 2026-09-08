@@ -1,6 +1,8 @@
 package build
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -165,26 +167,24 @@ func TestInstallMissing_XcodeCLTMissing(t *testing.T) {
 }
 
 func TestInstallMissing_BrewInstall(t *testing.T) {
-	// Simulate missing cmake and uv (both already installed on this machine,
-	// so "brew install" will succeed quickly as idempotent).
-	statuses := []DepStatus{
-		{Name: "Homebrew", Present: true},
-		{Name: "Xcode CLT", Present: true},
-		{Name: "cmake", Present: false},
-		{Name: "git", Present: true},
-		{Name: "uv", Present: false},
+	dir := t.TempDir()
+	record := filepath.Join(dir, "args")
+	t.Setenv("BREW_TEST_ARGS", record)
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$BREW_TEST_ARGS\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	err := InstallMissing(statuses)
+	t.Setenv("PATH", dir)
+	statuses := []DepStatus{{Name: "Homebrew", Present: true}, {Name: "Xcode CLT", Present: true}, {Name: "cmake"}, {Name: "uv"}}
+	if err := InstallMissing(statuses); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(record)
 	if err != nil {
-		t.Errorf("InstallMissing should succeed with brew install, got %v", err)
+		t.Fatal(err)
 	}
-
-	// Verify they are now detected as present.
-	fresh := CheckDeps()
-	for _, s := range fresh {
-		if (s.Name == "cmake" || s.Name == "uv") && !s.Present {
-			t.Errorf("%s should be present after InstallMissing", s.Name)
-		}
+	if string(got) != "install\ncmake\nuv\n" {
+		t.Fatalf("brew arguments: %q", got)
 	}
 }
 

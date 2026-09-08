@@ -26,6 +26,7 @@ var commandTree = []*command{
 		{Name: "delete"}, // destructive: no alias
 	}},
 	{Name: "config", Aliases: []string{"cfg"}, Children: []*command{
+		{Name: "apply"},
 		{Name: "show", Aliases: []string{"sh"}},
 		{Name: "path", Aliases: []string{"p"}},
 	}},

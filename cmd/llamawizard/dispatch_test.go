@@ -210,8 +210,8 @@ func TestNounWithoutSubcommand_PrintsUsageAndExits(t *testing.T) {
 	}{
 		{[]string{"models"}, "Usage: llamawizard models <list|add|show|remove|delete>", ""},
 		{[]string{"m"}, "Usage: llamawizard models <list|add|show|remove|delete>", ""},
-		{[]string{"config"}, "Usage: llamawizard config <show|path>", ""},
-		{[]string{"cfg"}, "Usage: llamawizard config <show|path>", ""},
+		{[]string{"config"}, "Usage: llamawizard config <show|path|apply>", ""},
+		{[]string{"cfg"}, "Usage: llamawizard config <show|path|apply>", ""},
 		{[]string{"pi"}, "Usage: llamawizard pi <install|uninstall>", ""},
 		{[]string{"completion"}, "", "Usage: llamawizard completion <bash|zsh|fish>"},
 	}
@@ -241,5 +241,14 @@ func TestNounWithoutSubcommand_PrintsUsageAndExits(t *testing.T) {
 				t.Errorf("stderr %q missing %q", errb.String(), c.wantErr)
 			}
 		})
+	}
+}
+
+func TestHelpFlagsNeverDispatchAnAction(t *testing.T) {
+	for _, args := range [][]string{{"-help"}, {"start", "--help"}, {"models", "-h"}, {"models", "delete", "base", "--help"}, {"models", "add", "--link", "https://example.com/model.gguf", "--help"}, {"cfg", "apply", "--dry-run", "-help"}} {
+		path, _, wizard, err := resolve(args)
+		if err != nil || wizard || path != "help" {
+			t.Fatalf("%v dispatched %q wizard=%v err=%v", args, path, wizard, err)
+		}
 	}
 }

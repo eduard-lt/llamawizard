@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"log"
+
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,8 +12,9 @@ import (
 	"time"
 
 	"github.com/eduard-lt/llamawizard/internal/download"
-	"github.com/eduard-lt/llamawizard/internal/launchd"
+	"github.com/eduard-lt/llamawizard/internal/llamaswap"
 	"github.com/eduard-lt/llamawizard/internal/pi"
+	"github.com/eduard-lt/llamawizard/internal/service"
 	"github.com/eduard-lt/llamawizard/internal/state"
 )
 
@@ -282,8 +283,15 @@ func addFromHFRepo(st *state.State, repo, name string) {
 
 func addFromDirect(st *state.State, rawURL, filename, name string) {
 	slug := deriveSlug(name, filename)
-	home, _ := os.UserHomeDir()
-	destDir := filepath.Join(home, "models", slug)
+	destDir, err := state.ModelDir(slug)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := validateNewModel(st, slug); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	fmt.Printf("Downloading %s...\n", filename)
 	if err := download.DownloadURL(rawURL, filename, 0, destDir, nil); err != nil {
@@ -341,6 +349,10 @@ func slugExists(st *state.State, slug string) bool {
 }
 
 func registerModel(st *state.State, slug, name, repo, filename, mmproj string, size int64) {
+	if _, err := state.ModelDir(slug); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if slugExists(st, slug) {
 		fmt.Fprintf(os.Stderr, "\nModel '%s' is already installed.\n", slug)
 		fmt.Println("Remove it first with: llamawizard models remove " + slug)
@@ -386,20 +398,14 @@ func registerModel(st *state.State, slug, name, repo, filename, mmproj string, s
 // updateAllConfig regenerates the llama-swap config and, when pi is present,
 // reconfigures pi with the current models and the given default model.
 func updateAllConfig(st *state.State, defaultSlug string) {
-	regenerateConfig(st)
-
-	if pi.IsInstalled() || st.PiConfigured {
-		if err := pi.ConfigureModels(st.Port, st.Models); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: pi model config failed: %v\n", err)
-		} else if err := pi.ConfigureSettings(defaultSlug, st.Models); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: pi settings failed: %v\n", err)
-		} else {
-			fmt.Printf("pi configuration updated (default model: %s).\n", defaultSlug)
-			st.PiConfigured = true
-			_ = st.Save("")
-		}
+	// Preserve the user's Pi default. --default on config apply is explicit.
+	if pi.IsInstalled() {
+		st.PiConfigured = true
 	}
-
+	if err := regenerateConfig(st); err != nil {
+		fmt.Fprintf(os.Stderr, "Config update failed: %v\n", err)
+		os.Exit(1)
+	}
 	restartServiceAfterAdd()
 }
 
@@ -414,16 +420,39 @@ func confirm(prompt string) bool {
 }
 
 func restartServiceAfterAdd() {
-	plistPath, err := defaultPlistPath()
+	st, err := state.Load("")
 	if err == nil {
-		if err := launchd.Stop(); err != nil {
-			log.Printf("Warning: failed to stop service: %v", err)
-		}
-		if err := launchd.Start(plistPath); err != nil {
-			log.Printf("Warning: failed to start service: %v", err)
-			fmt.Println("Service may not have restarted — check 'llamawizard status'")
-		} else {
-			fmt.Println("Service restarted.")
+		err = service.RestartAndCheck(st)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Service restart failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("Service restarted and API ready.")
+}
+
+func validateNewModel(st *state.State, slug string) error {
+	if _, err := state.ModelDir(slug); err != nil {
+		return err
+	}
+	if slugExists(st, slug) {
+		return fmt.Errorf("model %q already exists; download skipped", slug)
+	}
+	data, err := os.ReadFile(state.DefaultConfigPath())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	models, _, err := llamaswap.Catalog(data)
+	if err != nil {
+		return err
+	}
+	for _, m := range models {
+		if m.Slug == slug {
+			return fmt.Errorf("model ID %q is already used by a profile or alias; choose another name", slug)
 		}
 	}
+	return nil
 }
