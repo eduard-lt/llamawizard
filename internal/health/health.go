@@ -107,7 +107,7 @@ func CheckWithKey(port int, expectedModels []string, apiKey string) (Report, err
 		}
 	}
 
-	r.Pass = len(r.MissingModels) == 0 && len(expectedModels) > 0
+	r.Pass = len(r.MissingModels) == 0
 
 	if !r.Pass && len(expectedModels) > 0 {
 		r.enrichErrorLog()

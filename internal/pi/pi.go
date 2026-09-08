@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/eduard-lt/llamawizard/internal/atomicfile"
 	"github.com/eduard-lt/llamawizard/internal/state"
 )
 
@@ -139,60 +140,15 @@ func ConfigureModels(port int, models []state.ModelEntry) error {
 	if err != nil {
 		return err
 	}
-
-	mf := modelsFile{Providers: make(map[string]providerConfig)}
-
-	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, &mf); err != nil {
-			return fmt.Errorf("parsing existing models.json: %w", err)
-		}
-	}
-
-	var entries []modelEntry
-	for _, m := range models {
-		id := m.Slug
-		name := m.Name
-		if name == "" {
-			name = strings.ReplaceAll(id, "-", " ")
-			var runes []rune
-			cap := true
-			for _, r := range name {
-				if r == ' ' {
-					cap = true
-					runes = append(runes, r)
-				} else if cap {
-					runes = append(runes, []rune(strings.ToUpper(string(r)))...)
-					cap = false
-				} else {
-					runes = append(runes, r)
-				}
-			}
-			name = string(runes)
-		}
-		entries = append(entries, modelEntry{ID: id, Name: name})
-	}
-
-	mf.Providers["local"] = providerConfig{
-		API:     "openai-completions",
-		BaseURL: fmt.Sprintf("http://127.0.0.1:%d/v1", port),
-		APIKey:  "dummy",
-		Models:  entries,
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("creating pi config directory: %w", err)
-	}
-
-	data, err := json.MarshalIndent(mf, "", "  ")
+	existing, err := readOptional(path)
 	if err != nil {
-		return fmt.Errorf("marshalling models.json: %w", err)
+		return err
 	}
-
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("writing models.json: %w", err)
+	data, err := RenderModels(existing, port, "dummy", models, nil)
+	if err != nil {
+		return err
 	}
-
-	return nil
+	return atomicfile.Write(path, data, 0o600)
 }
 
 // ConfigureSettings merges pi-specific keys into ~/.pi/agent/settings.json
@@ -202,35 +158,21 @@ func ConfigureSettings(defaultModel string, models []state.ModelEntry) error {
 	if err != nil {
 		return err
 	}
-
-	var sf settingsFile
-	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, &sf); err != nil {
-			return fmt.Errorf("parsing existing settings.json: %w", err)
-		}
-	}
-
-	sf.DefaultProvider = "local"
-	sf.DefaultModel = defaultModel
-
-	var enabled []string
-	for _, m := range models {
-		enabled = append(enabled, m.Slug)
-	}
-	sf.EnabledModels = enabled
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("creating pi config directory: %w", err)
-	}
-
-	data, err := json.MarshalIndent(sf, "", "  ")
+	existing, err := readOptional(path)
 	if err != nil {
-		return fmt.Errorf("marshalling settings.json: %w", err)
+		return err
 	}
-
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("writing settings.json: %w", err)
+	data, err := RenderSettings(existing, defaultModel, models)
+	if err != nil {
+		return err
 	}
+	return atomicfile.Write(path, data, 0o600)
+}
 
-	return nil
+func readOptional(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	return b, err
 }

@@ -2,10 +2,13 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/eduard-lt/llamawizard/internal/atomicfile"
 )
 
 const currentSchemaVersion = 1
@@ -168,5 +171,27 @@ func (s *State) Save(path string) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0o644)
+	return atomicfile.Write(path, data, 0o600)
+}
+
+// ModelDir rejects traversal and symlinks before download, migration or deletion.
+func ModelDir(slug string) (string, error) {
+	if slug == "" || slug == "." || slug == ".." || filepath.Base(slug) != slug || strings.ContainsAny(slug, "/\\") {
+		return "", fmt.Errorf("unsafe model slug %q", slug)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(home, "models")
+	for _, path := range []string{root, filepath.Join(root, slug)} {
+		st, err := os.Lstat(path)
+		if err != nil && !os.IsNotExist(err) {
+			return "", err
+		}
+		if err == nil && (st.Mode()&os.ModeSymlink != 0 || !st.IsDir()) {
+			return "", fmt.Errorf("model directory is not a regular directory: %s", path)
+		}
+	}
+	return filepath.Join(root, slug), nil
 }

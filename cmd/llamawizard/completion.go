@@ -55,7 +55,7 @@ const bashCompletionScript = `_llamawizard() {
                 COMPREPLY=( $(compgen -W "list ls add a show sh remove rm delete" -- "$cur") )
                 ;;
             config|cfg)
-                COMPREPLY=( $(compgen -W "show sh path p" -- "$cur") )
+                COMPREPLY=( $(compgen -W "show sh path p apply" -- "$cur") )
                 ;;
             pi)
                 COMPREPLY=( $(compgen -W "install uninstall" -- "$cur") )
@@ -75,6 +75,9 @@ const bashCompletionScript = `_llamawizard() {
 
     if [ "${COMP_CWORD}" -eq 3 ]; then
         case "${COMP_WORDS[1]}/${COMP_WORDS[2]}" in
+            config/apply|cfg/apply)
+                COMPREPLY=( $(compgen -W "--dry-run --default" -- "$cur") )
+                ;;
             models/add|models/a|m/add|m/a)
                 COMPREPLY=( $(compgen -W "--link --name" -- "$cur") )
                 ;;
@@ -115,7 +118,11 @@ _llamawizard() {
                 fi
                 ;;
             config|cfg)
-                list=(show sh path p)
+                if (( CURRENT == 4 )) && [[ "${words[3]}" == apply ]]; then
+                    list=(--dry-run --default)
+                else
+                    list=(show sh path p apply)
+                fi
                 ;;
             pi)
                 list=(install uninstall)
@@ -144,11 +151,12 @@ compdef _llamawizard llamawizard
 
 const fishCompletionScript = `complete -c llamawizard -f -a "status st doctor dr logs lg start stop restart re warlock wl models m config cfg pi completion update up uninstall version v help h --help -h --version -v"
 complete -c llamawizard -f -n "__fish_seen_subcommand_from models m" -a "list ls add a show sh remove rm delete"
-complete -c llamawizard -f -n "__fish_seen_subcommand_from config cfg" -a "show sh path p"
+complete -c llamawizard -f -n "__fish_seen_subcommand_from config cfg" -a "show sh path p apply"
 complete -c llamawizard -f -n "__fish_seen_subcommand_from pi" -a "install uninstall"
 complete -c llamawizard -f -n "__fish_seen_subcommand_from completion" -a "bash zsh fish"
 complete -c llamawizard -f -n "__fish_seen_subcommand_from logs lg" -a "-f -n"
 complete -c llamawizard -f -n "__fish_seen_subcommand_from warlock wl" -a "--no-lan"
 complete -c llamawizard -f -n "__fish_seen_subcommand_from add a" -a "--link --name"
+complete -c llamawizard -f -n "__fish_seen_subcommand_from apply" -a "--dry-run --default"
 complete -c llamawizard -f -n "__fish_seen_subcommand_from delete" -a "--yes"
 `

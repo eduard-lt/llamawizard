@@ -39,6 +39,7 @@ MODELS  (alias: m)
   models delete <name> [--yes]           Remove from config AND delete the file (no shorthand — destructive)
 
 CONFIG  (alias: cfg)
+  config apply [--dry-run] [--default ID] Sync master config and verify service readiness
   config show, cfg sh                    Print the active config
   config path, cfg p                     Print config file location
 

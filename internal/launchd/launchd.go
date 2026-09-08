@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 )
 
 // ServiceLabel is the launchd service identifier.
@@ -268,21 +269,9 @@ func Install(plistPath string) error {
 }
 
 func installWithLabel(plistPath, label string) error {
-	spec := specForLabel(label)
-	d := domain()
-
-	bootoutCmd := exec.Command("launchctl", "bootout", spec)
-	_ = bootoutCmd.Run()
-
-	bootstrapCmd := exec.Command("launchctl", "bootstrap", d, plistPath)
-	if out, err := bootstrapCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("bootstrap: %w\n%s", err, string(out))
-	}
-
-	enableCmd := exec.Command("launchctl", "enable", spec)
-	_ = enableCmd.Run()
-
-	return nil
+	// A plist change needs a reload; ensureRunning retries while bootout completes.
+	_ = launchCommand("launchctl", "bootout", specForLabel(label)).Run()
+	return ensureRunning(plistPath, label, true)
 }
 
 // Uninstall removes the LaunchAgent from launchd and deletes the plist file.
@@ -293,7 +282,7 @@ func Uninstall(plistPath string) error {
 
 	spec := specForLabel(ServiceLabel)
 
-	bootoutCmd := exec.Command("launchctl", "bootout", spec)
+	bootoutCmd := launchCommand("launchctl", "bootout", spec)
 	_ = bootoutCmd.Run()
 
 	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
@@ -311,25 +300,43 @@ func Start(plistPath string) error {
 	return startOrBootstrap(plistPath, ServiceLabel)
 }
 
-func startOrBootstrap(plistPath, label string) error {
+// Restart replaces a running process without the asynchronous bootout/bootstrap
+// race. A stopped service is enabled, bootstrapped and explicitly kickstarted.
+func Restart(plistPath string) error { return ensureRunning(plistPath, ServiceLabel, true) }
+
+func startOrBootstrap(plistPath, label string) error { return ensureRunning(plistPath, label, false) }
+
+var launchCommand = exec.Command
+
+func ensureRunning(plistPath, label string, restart bool) error {
 	spec := specForLabel(label)
-	d := domain()
-
-	kickCmd := exec.Command("launchctl", "kickstart", spec)
-	if _, err := kickCmd.CombinedOutput(); err == nil {
-		return nil
+	if out, err := launchCommand("launchctl", "enable", spec).CombinedOutput(); err != nil {
+		return fmt.Errorf("enable: %w: %s", err, out)
 	}
-
-	bootstrapCmd := exec.Command("launchctl", "bootstrap", d, plistPath)
-	if out, err := bootstrapCmd.CombinedOutput(); err != nil {
-		kickCmd2 := exec.Command("launchctl", "kickstart", spec)
-		if _, err2 := kickCmd2.CombinedOutput(); err2 == nil {
+	args := []string{"kickstart"}
+	if restart {
+		args = append(args, "-k")
+	}
+	args = append(args, spec)
+	var lastErr error
+	for attempt := 0; attempt < 10; attempt++ {
+		if attempt > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		if _, err := launchCommand("launchctl", args...).CombinedOutput(); err == nil {
 			return nil
 		}
-		return fmt.Errorf("bootstrap: %w\n%s", err, string(out))
+		if out, err := launchCommand("launchctl", "bootstrap", domain(), plistPath).CombinedOutput(); err != nil {
+			lastErr = fmt.Errorf("bootstrap: %w: %s", err, out)
+			continue
+		}
+		if out, err := launchCommand("launchctl", args...).CombinedOutput(); err == nil {
+			return nil
+		} else {
+			lastErr = fmt.Errorf("kickstart: %w: %s", err, out)
+		}
 	}
-
-	return nil
+	return lastErr
 }
 
 // Stop unloads the service from launchd.
@@ -343,7 +350,7 @@ func Stop() error {
 func stopByLabel(label string) error {
 	spec := specForLabel(label)
 
-	cmd := exec.Command("launchctl", "bootout", spec)
+	cmd := launchCommand("launchctl", "bootout", spec)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("bootout: %w\n%s", err, string(out))
 	}
@@ -359,7 +366,7 @@ func Status() (string, error) {
 func statusByLabel(label string) (string, error) {
 	spec := specForLabel(label)
 
-	out, err := exec.Command("launchctl", "print", spec).CombinedOutput()
+	out, err := launchCommand("launchctl", "print", spec).CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("print: %w\n%s", err, string(out))
 	}

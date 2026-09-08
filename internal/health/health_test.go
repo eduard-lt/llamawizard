@@ -107,8 +107,8 @@ func TestCheck_EmptyExpected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if r.Pass {
-		t.Error("expected Pass=false when expectedModels is empty (nothing to verify)")
+	if !r.Pass {
+		t.Error("a responding API is healthy even after removing the last model")
 	}
 }
 

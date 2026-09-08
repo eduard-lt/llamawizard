@@ -14,6 +14,7 @@ var flagAliases = map[string]string{
 	"--version": "version",
 	"-v":        "version",
 	"--help":    "help",
+	"-help":     "help",
 	"-h":        "help",
 }
 
@@ -38,7 +39,13 @@ func resolve(args []string) (path string, rest []string, wizard bool, err error)
 			fmt.Sprintf("command '%s'", args[0]), suggestion, "help")
 	}
 
+	if len(args) > 1 && isHelpFlag(args[1]) {
+		return "help", []string{cmd.Name}, false, nil
+	}
 	if len(cmd.Children) == 0 {
+		if helpRequested(args[1:]) {
+			return "help", []string{cmd.Name}, false, nil
+		}
 		return cmd.Name, args[1:], false, nil
 	}
 
@@ -57,6 +64,9 @@ func resolve(args []string) (path string, rest []string, wizard bool, err error)
 			fmt.Sprintf("subcommand '%s %s'", cmd.Name, args[1]), suggestion, "help "+cmd.Name)
 	}
 
+	if helpRequested(args[2:]) {
+		return "help", []string{cmd.Name, sub.Name}, false, nil
+	}
 	return cmd.Name + "." + sub.Name, args[2:], false, nil
 }
 
@@ -144,8 +154,59 @@ func runResolved(path string, rest []string) {
 			printHelp()
 			return
 		}
-		if !printCommandHelp(rest[0]) {
+		if !printHelpPath(rest) {
 			os.Exit(1)
 		}
 	}
+}
+
+func isHelpFlag(s string) bool { return s == "--help" || s == "-h" || s == "-help" }
+
+func printHelpPath(path []string) bool {
+	cmd, ok := findCommand(commandTree, path[0])
+	if !ok {
+		return printCommandHelp(path[0])
+	}
+	if len(path) == 1 {
+		return printCommandHelp(cmd.Name)
+	}
+	sub, ok := findCommand(cmd.Children, path[1])
+	if !ok || len(path) > 2 {
+		fmt.Fprintf(os.Stderr, "Unknown help topic: %s\n", strings.Join(path, " "))
+		return false
+	}
+	switch cmd.Name + "." + sub.Name {
+	case "config.apply":
+		fmt.Println("Usage: llamawizard config apply [--dry-run] [--default MODEL_ID]")
+		fmt.Println("Sync the master YAML to Pi, back up changed files, and verify API readiness.")
+		fmt.Println("  --dry-run          Validate and preview; no writes or restart")
+		fmt.Println("  --default MODEL_ID Explicitly change Pi's default (otherwise preserved)")
+	case "models.add":
+		fmt.Println("Usage: llamawizard models add [--link URL] [--name NAME]")
+		fmt.Println("Without a link, choose a model interactively. --link alone opens the link guide.")
+		fmt.Println("Existing profiles and Pi preferences are preserved; split GGUF files are unsupported.")
+	case "models.delete":
+		fmt.Println("Usage: llamawizard models delete MODEL_ID [--yes]")
+		fmt.Println("Remove the inventory/config entry and its files. Refuses files shared by another profile.")
+	case "models.remove":
+		fmt.Println("Usage: llamawizard models remove MODEL_ID")
+		fmt.Println("Remove the inventory/config entry, retain files, and verify service readiness.")
+	default:
+		return printCommandHelp(cmd.Name)
+	}
+	return true
+}
+
+func helpRequested(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--name", "--link", "--default", "-n":
+			i++
+			continue
+		}
+		if isHelpFlag(args[i]) {
+			return true
+		}
+	}
+	return false
 }

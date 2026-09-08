@@ -1,10 +1,14 @@
 package download
 
 import (
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 )
 
 func TestResolveFilesMultimodal(t *testing.T) {
+	mockTree(t)
 	files, err := ResolveFiles("ggml-org/gemma-4-26B-A4B-it-GGUF", "Q8_0")
 	if err != nil {
 		t.Fatalf("ResolveFiles failed: %v", err)
@@ -38,6 +42,7 @@ func TestResolveFilesMultimodal(t *testing.T) {
 }
 
 func TestResolveFilesMultimodalNoMmproj(t *testing.T) {
+	mockTree(t)
 	// Q4_0 exists but has no mmproj companion in this repo.
 	files, err := ResolveFiles("ggml-org/gemma-4-26B-A4B-it-GGUF", "Q4_0")
 	if err != nil {
@@ -54,6 +59,7 @@ func TestResolveFilesMultimodalNoMmproj(t *testing.T) {
 }
 
 func TestResolveFilesTextOnly(t *testing.T) {
+	mockTree(t)
 	files, err := ResolveFiles("bartowski/Qwen2.5-7B-Instruct-GGUF", "Q4_K_M")
 	if err != nil {
 		t.Fatalf("ResolveFiles failed: %v", err)
@@ -73,6 +79,7 @@ func TestResolveFilesTextOnly(t *testing.T) {
 }
 
 func TestResolveFilesNotFound(t *testing.T) {
+	mockTree(t)
 	_, err := ResolveFiles("ggml-org/gemma-4-26B-A4B-it-GGUF", "Q99_FAKE")
 	if err == nil {
 		t.Fatal("expected error for nonexistent quant, got nil")
@@ -87,4 +94,17 @@ func stringsHasSuffix(s, suffix string) bool {
 
 func stringsHasPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func mockTree(t *testing.T) {
+	t.Helper()
+	old := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = old })
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		data := `[{"type":"file","path":"model-Q8_0.gguf","size":100},{"type":"file","path":"mmproj-Q8_0.gguf","size":20},{"type":"file","path":"model-Q4_0.gguf","size":50},{"type":"file","path":"model-Q4_K_M.gguf","size":60}]`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(data)), Header: http.Header{}}, nil
+	})
 }
