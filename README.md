@@ -1,12 +1,23 @@
-# llamawizard — run local LLMs on macOS
+# llamawizard
 
-Download GGUF models, run Metal-accelerated llama.cpp on Apple Silicon, and manage an OpenAI-compatible local API with llama-swap. llamawizard is a terminal setup wizard and model manager for Mac users who want to run and customize local language models.
+```
+██╗     ██╗      █████╗ ███╗   ███╗ █████╗ ██╗    ██╗██╗███████╗ █████╗ ██████╗ ██████╗ 
+██║     ██║     ██╔══██╗████╗ ████║██╔══██╗██║    ██║██║╚══███╔╝██╔══██╗██╔══██╗██╔══██╗
+██║     ██║     ███████║██╔████╔██║███████║██║ █╗ ██║██║  ███╔╝ ███████║██████╔╝██║  ██║
+██║     ██║     ██╔══██║██║╚██╔╝██║██╔══██║██║███╗██║██║ ███╔╝  ██╔══██║██╔══██╗██║  ██║
+███████╗███████╗██║  ██║██║ ╚═╝ ██║██║  ██║╚███╔███╔╝██║███████╗██║  ██║██║  ██║██████╔╝
+╚══════╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ 
+```
 
-It detects your Mac's hardware, recommends models, downloads weights, installs the inference stack, and manages a LaunchAgent. After setup, use it to add models, start and stop the service, inspect logs, and experiment with model profiles.
+A terminal wizard that takes a Mac from zero to a running, hardware-appropriate local LLM stack. It detects your hardware, picks the right model via [whichllm](https://github.com/Andyyyy64/whichllm), downloads it, builds llama.cpp (Metal-accelerated on Apple Silicon), installs and configures llama-swap, sets up a LaunchAgent for auto-start on boot, and runs a health check before it says "done."
+
+After setup, it doubles as an ongoing management tool: start, stop, restart, status, health checks, log viewing, and model management.
+
+Run local LLMs on macOS with GGUF models, Apple Silicon acceleration, and an OpenAI-compatible API.
 
 **Keep your customizations:** edit one llama-swap YAML file for aliases, context sizes, and model profiles. Adding a model preserves existing entries; `config apply` synchronizes shared settings to Pi with backups and a service-readiness check. See [Customize local LLM profiles](docs/customization.md).
 
-**Status:** actively developed. The customization workflow described here is on the 0.1.8 development branch until that release is published.
+**Status:** actively developed. Commands and file layout may still change between versions.
 
 ## Table of contents
 
