@@ -3,10 +3,19 @@ package whichllm
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestIsAvailable(t *testing.T) {
+	bin := t.TempDir()
+	t.Setenv("PATH", bin)
+	if IsAvailable() {
+		t.Fatal("expected uv to be unavailable on an empty PATH")
+	}
+	if err := os.WriteFile(filepath.Join(bin, "uv"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if !IsAvailable() {
 		t.Error("expected uv to be available on PATH")
 	}
