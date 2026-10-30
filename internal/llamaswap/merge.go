@@ -34,6 +34,10 @@ func document(data []byte) (*yaml.Node, error) {
 		return nil, err
 	}
 	models := mapping(n.Content[0], "models")
+	// A bare "models:" key is an empty catalog, not a broken config.
+	if models != nil && models.Kind == yaml.ScalarNode && models.Tag == "!!null" {
+		models.Kind, models.Tag, models.Value = yaml.MappingNode, "!!map", ""
+	}
 	if models == nil || models.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("config requires a models mapping")
 	}

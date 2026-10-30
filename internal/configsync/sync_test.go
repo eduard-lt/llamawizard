@@ -246,3 +246,27 @@ func TestWriteFailureRollsBackAlreadyReplacedFiles(t *testing.T) {
 		}
 	}
 }
+
+// Reinstalling after the profile was removed by hand: last-applied still lists
+// the model, which alone must keep meaning "deliberately removed".
+func TestAddRestoresProfileMissingFromMaster(t *testing.T) {
+	st := setup(t)
+	st.Models = []state.ModelEntry{{Slug: "gone", File: "gone.gguf", Quant: "Q4_K_M"}}
+	home, _ := os.UserHomeDir()
+	write(t, filepath.Join(home, ".local", "ai", "last-applied.yaml"), []byte("apiKeys: [k]\nmodels:\n  gone:\n    cmd: |\n      '/server' --port ${PORT}\n"))
+	write(t, state.DefaultConfigPath(), []byte("apiKeys: [k]\nmodels:"))
+
+	has := func(opts Options) bool {
+		plan, err := Prepare(st, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bytes.Contains(plan.Master, []byte("gone:"))
+	}
+	if has(Options{}) {
+		t.Error("plain sync resurrected a deliberately removed profile")
+	}
+	if !has(Options{Add: "gone"}) {
+		t.Error("explicit add did not restore the profile")
+	}
+}

@@ -19,7 +19,10 @@ import (
 
 type Options struct {
 	// ApplyOnly synchronizes the master as-is; add/remove operations also merge inventory.
-	ApplyOnly    bool
+	ApplyOnly bool
+	// Add names a model the user just installed, generated if the master lacks
+	// it even when last-applied says it was deliberately removed from the master.
+	Add          string
 	Remove       []string
 	APIKey       *string
 	DefaultModel string
@@ -108,7 +111,7 @@ func Prepare(st *state.State, opts Options) (*Plan, error) {
 		}
 		var missing []state.ModelEntry
 		for _, m := range st.Models {
-			if !present[m.Slug] && !previous[m.Slug] {
+			if !present[m.Slug] && (!previous[m.Slug] || m.Slug == opts.Add) {
 				missing = append(missing, m)
 			}
 		}

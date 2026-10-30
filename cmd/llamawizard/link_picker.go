@@ -70,6 +70,7 @@ type linkPicker struct {
 	current    string
 	bar        progress.Model
 	dlErr      error
+	dlStarted  bool
 
 	result linkAddResult
 
@@ -134,6 +135,7 @@ func (m *linkPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case linkDlMsg:
 		if msg.err != nil {
 			m.dlErr = msg.err
+			m.dlStarted = msg.filename != ""
 			m.screen = lsError
 			return m, nil
 		}
@@ -281,7 +283,11 @@ func (m *linkPicker) errorView() string {
 	b.WriteString(ltTitle.Render("Download failed"))
 	b.WriteString("\n\n")
 	b.WriteString(ltErr.Render(m.dlErr.Error()))
-	b.WriteString("\n\n" + ltDim.Render("Press Enter to exit — partial file is kept for resume"))
+	if m.dlStarted {
+		b.WriteString("\n\n" + ltDim.Render("Press Enter to exit — partial file is kept for resume"))
+	} else {
+		b.WriteString("\n\n" + ltDim.Render("Press Enter to exit"))
+	}
 	return ltBox.Render(b.String())
 }
 
