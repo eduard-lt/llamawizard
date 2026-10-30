@@ -126,20 +126,33 @@ func TestDeriveSlugIncludesQuant(t *testing.T) {
 	}
 }
 
-// The guard registerModel relies on: re-adding an installed slug must be
-// caught before the entry is saved, not by GenerateConfig after the fact.
-func TestSlugExists(t *testing.T) {
-	st := &state.State{
-		Models: []state.ModelEntry{{Slug: "qwen3.6-27b"}, {Slug: "gemma-4-26b-a4b-it"}},
+// A model whose files were deleted by hand must be re-addable, keeping its
+// slot; one whose files are present must still be refused.
+func TestStaleModelCanBeReinstalled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	const slug = "qwen-q4"
+	st := &state.State{Models: []state.ModelEntry{{Slug: slug, File: "q.gguf", Mmproj: "mm.gguf", CtxSize: 4096}}}
+
+	if err := validateNewModel(st, slug); err != nil {
+		t.Fatalf("stale entry blocked re-add: %v", err)
 	}
-	if !slugExists(st, "gemma-4-26b-a4b-it") {
-		t.Error("expected gemma-4-26b-a4b-it to exist")
+
+	dir := filepath.Join(home, "models", slug)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if slugExists(st, "nope") {
-		t.Error("did not expect nope to exist")
+	if err := os.WriteFile(filepath.Join(dir, "q.gguf"), nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if slugExists(&state.State{}, "x") {
-		t.Error("empty state should have no slugs")
+	if err := validateNewModel(st, slug); err != nil {
+		t.Fatalf("missing mmproj should count as stale: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mm.gguf"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateNewModel(st, slug); err == nil {
+		t.Fatal("installed model was not refused")
 	}
 }
 

@@ -703,8 +703,8 @@ func removeModelCommand(name string, deleteFiles, skipConfirm bool) {
 	fmt.Printf("Removed %s. Service API ready.\n", name)
 }
 
-func regenerateConfig(st *state.State) error {
-	plan, err := configsync.Prepare(st, configsync.Options{})
+func regenerateConfig(st *state.State, added string) error {
+	plan, err := configsync.Prepare(st, configsync.Options{Add: added})
 	if err != nil {
 		return err
 	}

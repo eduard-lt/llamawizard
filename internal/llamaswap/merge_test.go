@@ -52,3 +52,13 @@ func TestCatalogReadsContextMacros(t *testing.T) {
 		t.Fatalf("%v %v", models, err)
 	}
 }
+
+func TestCatalogAcceptsBareModelsKey(t *testing.T) {
+	models, key, err := Catalog([]byte("apiKeys:\n    - dummy\nmodels:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 0 || key != "dummy" {
+		t.Fatalf("models=%v key=%q", models, key)
+	}
+}

@@ -334,18 +334,23 @@ func fileSize(path string) int64 {
 	return st.Size()
 }
 
-// slugExists reports whether a model with this slug is already in state.
-// registerModel consults it before saving: a duplicate entry would persist
-// to state.json first, and llamaswap.GenerateConfig would then reject every
-// subsequent config regeneration (models remove, wizard, updateAllConfig)
-// until the duplicate is cleaned up.
-func slugExists(st *state.State, slug string) bool {
-	for _, m := range st.Models {
-		if m.Slug == slug {
-			return true
+// modelFilesPresent reports whether everything a state entry points at is on
+// disk. Files deleted by hand leave a stale entry that must not block a re-add.
+func modelFilesPresent(m state.ModelEntry) bool {
+	dir, err := state.ModelDir(m.Slug)
+	if err != nil {
+		return false
+	}
+	files := []string{m.File}
+	if m.Mmproj != "" {
+		files = append(files, m.Mmproj)
+	}
+	for _, f := range files {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func registerModel(st *state.State, slug, name, repo, filename, mmproj string, size int64) {
@@ -353,31 +358,38 @@ func registerModel(st *state.State, slug, name, repo, filename, mmproj string, s
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if slugExists(st, slug) {
-		fmt.Fprintf(os.Stderr, "\nModel '%s' is already installed.\n", slug)
-		fmt.Println("Remove it first with: llamawizard models remove " + slug)
-		os.Exit(1)
-	}
 
 	quant := quantFromFilename(filename)
 	if quant == "" {
 		quant = "custom"
 	}
-	displayName := name
-	if displayName == "" {
-		displayName = slug
-	}
 
-	st.Models = append(st.Models, state.ModelEntry{
-		Slug:        slug,
-		Name:        displayName,
-		HFRepo:      repo,
-		Quant:       quant,
-		File:        filename,
-		Mmproj:      mmproj,
-		SizeBytes:   size,
-		InstalledAt: time.Now().Format(time.RFC3339),
-	})
+	// validateNewModel already rejected installed slugs, so a match here is a
+	// stale entry being reinstalled: update it in place to keep user settings.
+	entry := state.ModelEntry{Slug: slug}
+	idx := -1
+	for i, m := range st.Models {
+		if m.Slug == slug {
+			entry, idx = m, i
+			break
+		}
+	}
+	if name != "" {
+		entry.Name = name
+	} else if entry.Name == "" {
+		entry.Name = slug
+	}
+	entry.HFRepo = repo
+	entry.Quant = quant
+	entry.File = filename
+	entry.Mmproj = mmproj
+	entry.SizeBytes = size
+	entry.InstalledAt = time.Now().Format(time.RFC3339)
+	if idx >= 0 {
+		st.Models[idx] = entry
+	} else {
+		st.Models = append(st.Models, entry)
+	}
 	if err := st.Save(""); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving state: %v\n", err)
 		os.Exit(1)
@@ -397,12 +409,12 @@ func registerModel(st *state.State, slug, name, repo, filename, mmproj string, s
 
 // updateAllConfig regenerates the llama-swap config and, when pi is present,
 // reconfigures pi with the current models and the given default model.
-func updateAllConfig(st *state.State, defaultSlug string) {
+func updateAllConfig(st *state.State, addedSlug string) {
 	// Preserve the user's Pi default. --default on config apply is explicit.
 	if pi.IsInstalled() {
 		st.PiConfigured = true
 	}
-	if err := regenerateConfig(st); err != nil {
+	if err := regenerateConfig(st, addedSlug); err != nil {
 		fmt.Fprintf(os.Stderr, "Config update failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -435,8 +447,14 @@ func validateNewModel(st *state.State, slug string) error {
 	if _, err := state.ModelDir(slug); err != nil {
 		return err
 	}
-	if slugExists(st, slug) {
-		return fmt.Errorf("model %q already exists; download skipped", slug)
+	for _, m := range st.Models {
+		if m.Slug != slug {
+			continue
+		}
+		if modelFilesPresent(m) {
+			return fmt.Errorf("model %q already exists in %s; download skipped", slug, filepath.Join("~/models", slug))
+		}
+		return nil // stale entry: its profile, if any, is reused for the reinstall
 	}
 	data, err := os.ReadFile(state.DefaultConfigPath())
 	if os.IsNotExist(err) {
